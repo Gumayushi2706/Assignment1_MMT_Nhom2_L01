@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" width="120" alt="Trường ĐH Bách Khoa - ĐHQG TP.HCM Logo" />
+</p>
+
 # NexusStream: Distributed Streaming Collaboration System
 > **Course:** CO3093 – Phát triển Ứng dụng Mạng (Network Application Development)  
 > **Assignment 1:** Distributed and Streaming-based Client-Server Collaboration Application  
