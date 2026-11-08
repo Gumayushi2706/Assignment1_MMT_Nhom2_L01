@@ -17,3 +17,8 @@ Thumbs.db
 client/downloads/*
 !client/downloads/.gitkeep
 
+# Excluded reports & slides
+*.tex
+Slide_Assignment1.pdf
+
+
