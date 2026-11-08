@@ -126,7 +126,8 @@ class RawSocketHTTPServer:
 
     def _handle_get(self, conn, path):
         """Handle GET requests: state API, file download, and static assets."""
-        if path == "/api/state":
+        # State and peer discovery endpoints (supports /api/state and /get-list)
+        if path.rstrip("/") in ("/api/state", "/get-list", "/active-peers"):
             with self.client.lock:
                 state = {
                     "username": self.client.username,
@@ -165,25 +166,30 @@ class RawSocketHTTPServer:
         """Handle POST requests: connect, disconnect, message send, and file upload."""
         try:
             data = json.loads(body.decode('utf-8')) if body else {}
+            ep = path.rstrip("/")
 
-            if path == "/api/connect":
-                ok, msg = self.client.connect_and_login(data.get("username", "").strip(), data.get("host", "127.0.0.1"), int(data.get("port", 8888)))
+            if ep in ("/api/connect", "/login", "/connect-peer", "/submit-info"):
+                uname = (data.get("username") or data.get("user") or "").strip()
+                host = data.get("host") or data.get("server_ip") or "127.0.0.1"
+                port = int(data.get("port") or data.get("server_port") or 8888)
+                ok, msg = self.client.connect_and_login(uname, host, port)
                 self._send_json(conn, {"success": ok, "message": msg})
 
-            elif path == "/api/disconnect":
+            elif ep in ("/api/disconnect", "/logout"):
                 self.client.disconnect()
                 self._send_json(conn, {"success": True, "message": "Disconnected"})
 
-            elif path == "/api/send_message":
-                target, text = data.get("target", "ALL"), data.get("text", "").strip()
+            elif ep in ("/api/send_message", "/broadcast-peer", "/send-peer"):
+                target = data.get("target") or data.get("receiver") or ("ALL" if "broadcast" in ep else "ALL")
+                text = (data.get("text") or data.get("message") or data.get("body") or "").strip()
                 if not text:
                     self._send_json(conn, {"success": False, "message": "Empty message"}, 400)
                     return
                 ok = self.client.send_broadcast_message(text) if target == "ALL" else self.client.send_unicast_message(target, text)
                 self._send_json(conn, {"success": ok})
 
-            elif path == "/api/upload_and_send":
-                target = data.get("target")
+            elif ep in ("/api/upload_and_send", "/send-file"):
+                target = data.get("target") or data.get("receiver")
                 filename = data.get("filename", "upload.bin")
                 file_bytes = base64.b64decode(data.get("content_b64", ""))
                 ok, msg = self.client.send_file(target, file_bytes=file_bytes, filename=filename)
