@@ -2,130 +2,64 @@
   <img src="logo.png" width="120" alt="Trường ĐH Bách Khoa - ĐHQG TP.HCM Logo" />
 </p>
 
-# Assignment 1: Distributed Streaming Collaboration System (NexusStream)
-> **Course:** CO3093 / CO3094 – Mạng Máy Tính & Phát triển Ứng dụng Mạng (Computer Networks & Network Application Development)  
-> **Assignment 1:** Distributed and Streaming-based Client-Server Collaboration Application  
+# Assignment 1: Distributed Streaming Collaboration System
+> **Môn học:** CO3093 / CO3094 – Mạng Máy Tính & Phát triển Ứng dụng Mạng (HCMUT)  
+> **Dự án:** Ứng dụng cộng tác Client-Server và Peer-to-Peer thời gian thực dựa trên kết nối phân tán và streaming.
 
 ---
 
-## 1. Giới thiệu Tổng quan
+## 1. Giới thiệu
 
-Hệ thống cộng tác thời gian thực phân tán **NexusStream** được xây dựng **100% bằng socket nhị phân mức thấp** (`import socket` trong Python), hoàn toàn không sử dụng các web framework hay thư viện mạng bậc cao (như Flask, Django, Tornado, Express, WebSockets) theo đúng quy định đề bài:
-
-- **Kiến trúc phân tách 2 kênh (Dual-Plane Architecture):**
-  - **TCP Signaling Plane:** Bắt tay 2 chiều TCP, xác thực đăng nhập duy nhất, theo dõi phiên (Session Management), tự động phát hiện người dùng (Peer Discovery), gửi nhận tin nhắn chat thời gian thực (Broadcast & Unicast) và phát tín hiệu báo trước khi truyền file (`FILE_ANNOUNCE`).
-  - **UDP Data Streaming Plane:** Truyền dữ liệu file tin cậy độc lập bằng giải thuật **Selective Repeat ARQ** (cửa sổ trượt Sliding Window $N=8$, kích thước chunk 1200 bytes $< \text{MTU } 1500\text{B}$ tránh phân mảnh IP), loại bỏ hoàn toàn hiện tượng nghẽn đầu hàng (**Head-of-Line Blocking**).
-- **Bảo mật Tầng Ứng dụng (E2EE):** Mã hóa xác thực **AES-256-GCM** (chuẩn AEAD) với khóa đối xứng 32B và nonce ngẫu nhiên 12B cho cả nội dung tin nhắn và từng chunk dữ liệu UDP (Server chỉ đóng vai trò Zero-Knowledge Relay).
-- **Web UI thuần Socket (Zero-Framework):** Tự xây dựng máy chủ HTTP/1.1 socket thuần phục vụ giao diện Web Dashboard (HTML5, Modern CSS, Vanilla JS), quản lý trạng thái bằng Cookie RFC 6265, cập nhật danh bạ và hiển thị thanh tiến trình truyền file thời gian thực (đáp ứng trọn vẹn Step 9).
+Hệ thống được xây dựng **100% bằng Socket thuần mức thấp** (`import socket`), hoàn toàn không sử dụng web framework bậc cao (Flask, Django, Tornado) hay WebSockets:
+- **TCP Signaling Plane (Port 8888):** Bắt tay 2 chiều, xác thực đăng nhập duy nhất, quản lý danh bạ online (Peer Discovery) và nhắn tin E2EE thời gian thực (Broadcast & Unicast).
+- **UDP Data Streaming Plane (Port 8889 / Dynamic):** Truyền file tin cậy độc lập với giải thuật **Selective Repeat ARQ** (cửa sổ trượt $N=8$, chunk 1200B $< 1500\text{B}$ MTU, đối soát SHA-256).
+- **Bảo mật Tầng Ứng dụng:** Mã hóa xác thực toàn trình **AES-256-GCM** (khóa 32B, nonce 12B).
+- **Web UI Socket thuần (Zero-Framework):** Tự xây dựng HTTP/1.1 server bằng socket phục vụ giao diện Web Dashboard, quản lý phiên Cookie RFC 6265, Basic Auth RFC 7235 và hiển thị thông báo tin nhắn chưa đọc.
 
 ---
 
-## 2. Bảng Đối chiếu 10 Tiêu chí Đề bài (Rubric 10/10 Điểm)
+## 2. Cài đặt
 
-| Tiêu chí (Milestone) | Yêu cầu theo Rubric | Hiện thực trong Mã nguồn | Điểm |
-| :--- | :--- | :--- | :---: |
-| **Step 1: Setup & Protocol Design** | Header nhị phân, cờ Flags, CRC32, Framing. | [`protocol/packet.py`](protocol/packet.py): Header TCP 20B cố định `!HBBB3sIII`, hàm `recv_exact` chống dính/xé gói. | 1 đ |
-| **Step 2: Socket Setup & Handshake** | Bắt tay 2 chiều TCP giữa Client và Server. | [`server/server.py`](server/server.py) & [`client/client.py`](client/client.py): Cặp gói tin `HANDSHAKE_REQ` và `HANDSHAKE_ACK`. | 1 đ |
-| **Step 3: Auth & State Management** | Đăng nhập tên duy nhất, quản lý phiên, lưu IP/Port. | [`server/user_manager.py`](server/user_manager.py): Lưu `UserSession` an toàn đa luồng (`RLock`), broadcast `USER_JOINED`. | 1 đ |
-| **Step 4: Concurrency Implementation** | Đa luồng (Multi-threading), hỗ trợ 10–20 clients. | Mô hình Thread-per-Client, kiểm thử thành công 15 clients đồng thời trong [`tests/test_integration.py`](tests/test_integration.py). | 1 đ |
-| **Step 5: Time-sensitive Streaming** | Định tuyến chat chung (Broadcast) và riêng (Unicast). | Gói tin `MSG_BROADCAST`, `MSG_UNICAST`, kèm gói xác nhận `MSG_DELIVERY_ACK`. | 1 đ |
-| **Step 6: Reliable File Transfer** | Truyền file UDP tin cậy, cắt chunk, đối soát toàn vẹn. | [`protocol/udp_stream.py`](protocol/udp_stream.py): Selective Repeat ARQ, cửa sổ trượt $N=8$, chunk 1200B ($< \text{MTU } 1500\text{B}$), đối soát mã hash SHA-256. | 1 đ |
-| **Step 7: Resilience & Error Handling** | Chịu lỗi sập nguồn, timeout socket, không crash server. | Bắt lỗi `ConnectionResetError`, `BrokenPipeError`, ngắt `break` an toàn khi hỏng framing; Watchdog quét định kỳ 5s loại bỏ session chết. | 1 đ |
-| **Step 8: Security Layer** | Mã hóa dữ liệu E2EE trước khi gửi và giải mã khi nhận. | [`protocol/crypto.py`](protocol/crypto.py): Thuật toán chuẩn **AES-256-GCM** (khóa 32B, IV 12B), chống Replay Attack. | 1 đ |
-| **Step 9: HTTP-based UI with Client JS** | Giao diện Web hiển thị chat, tiến trình tải, danh bạ online. | [`client/web_server.py`](client/web_server.py): Server HTTP/1.1 socket thuần phục vụ giao diện Web Dashboard, không dùng framework; tích hợp Notification System CO3094. | 1 đ |
-| **Step 10: Testing & Code Quality** | Kiểm thử tự động hóa toàn diện, code sạch sẽ. | 15 bài test tự động hóa toàn diện (`tests/`): kiểm tra giao thức nhị phân, UDP streaming, REST API và kiểm thử tích hợp 15 clients. | 1 đ |
-
----
-
-### Đối chiếu Đặc tả Kỹ thuật CO3094 (Hybrid Chat & RESTful Specification)
-
-Bên cạnh 10 tiêu chí Rubric của Assignment 1, hệ thống hiện thực đầy đủ các đặc tả trong tài liệu `CO3094_assignment_streaprous.pdf` (Mục 2.2, 2.3 & 2.4):
-- **Giai đoạn Đăng ký & Định danh (Client-Server Tracker - Trang 7):** Quản lý trạng thái phiên đa luồng với `client_ip`, `client_port`, `udp_port`, `state`, `last_activity`.
-- **Cơ chế Xác thực Kép (Mục 2.2 - Trang 8):** Hỗ trợ cả HTTP Basic Authentication (RFC 2617 / RFC 7235) và HTTP Cookie (RFC 6265 qua header `Set-Cookie`).
-- **Hệ thống Kênh & Thông báo (Mục 2.3 - Trang 10):** Quản lý kênh Global Chat và Direct Messages, tin nhắn bất biến không xóa/sửa, hệ thống thông báo hiển thị tổng số tin nhắn chưa đọc trên tab trình duyệt (ví dụ: `(3) Assignment 1...`) và huy hiệu đỏ Unread Badge hiển thị số tin chưa đọc riêng theo từng người/kênh.
-- **Hỗ trợ danh mục RESTful APIs theo Mục 2.4 (Trang 11):**
-  - `/login` & `/submit-info`: Xác thực đăng ký/đăng nhập (hỗ trợ cả Cookie RFC 6265 và Basic Auth RFC 7235).
-  - `/get-list` & `/add-list`: Truy vấn danh bạ các peer trực tuyến.
-  - `/connect-peer`: Thiết lập kết nối giữa client và mạng lưới.
-  - `/broadcast-peer`: Gửi tin nhắn Broadcast đến toàn bộ mạng lưới peer.
-  - `/send-peer`: Gửi tin nhắn Unicast trực tiếp đến một peer xác định (kiểm tra chặt chẽ trường `target`).
-  - `/send-file`: Truyền tệp nhị phân tin cậy qua UDP streaming với Selective Repeat ARQ.
-  - `/logout`: Đăng xuất và xóa phiên Cookie.
-- **Tiêu chuẩn mã nguồn (Mục 3.1):** Tuân thủ quy chuẩn định dạng PEP 8 và docstring chuẩn PEP 257.
-
----
-
-## 3. Cấu trúc Thư mục Dự án
-
-```text
-assignment1/
-├── protocol/                           # [Tầng Giao thức Ứng dụng]
-│   ├── packet.py                      # Header TCP nhị phân 20B, CRC32, recv_exact chống dính/xé gói
-│   ├── crypto.py                      # Mã hóa đối xứng AES-256-GCM (khóa 32B, IV 12B)
-│   └── udp_stream.py                  # Selective Repeat ARQ, Sliding Window N=8, chunk 1200B
-├── server/                             # [Tầng Máy chủ Trung tâm]
-│   ├── server.py                      # TCP Server đa luồng non-blocking, Watchdog định kỳ 5s
-│   ├── user_manager.py                # Quản lý danh bạ online, kiểm soát phiên an toàn luồng (RLock)
-│   └── run_server.py                  # Điểm khởi chạy Server dòng lệnh
-├── client/                             # [Tầng Máy khách Client]
-│   ├── client.py                      # Động cơ Dual-Plane (TCP Signaling + UDP Transfer)
-│   ├── web_server.py                  # Server HTTP/1.1 bằng Socket thuần (REST API /api/* & CO3094)
-│   ├── run_client.py                  # Khởi chạy Client Web UI Dashboard
-│   ├── downloads/                     # Thư mục lưu tệp nhận qua UDP
-│   └── web/                           # Giao diện Web Client (HTML5, Modern CSS, Vanilla JS)
-├── tests/                              # [Bộ Kiểm thử Tự động hóa Toàn diện]
-│   ├── test_protocol.py               # Kiểm tra Header 20B, CRC32, mã hóa AES-GCM
-│   ├── test_udp_stream.py             # Kiểm tra Selective Repeat ARQ và toàn vẹn SHA-256
-│   └── test_integration.py            # Kiểm tra 15 clients đồng thời, ngắt socket đột ngột RST, REST API
-└── README.md                          # Hướng dẫn chi tiết vận hành và đối chiếu Rubric
-```
-
----
-
-## 4. Yêu cầu Hệ thống & Cài đặt
-
-- **Môi trường:** Python 3.10 trở lên (Windows, macOS, Linux).
-- **Cài đặt thư viện:** Dự án chỉ sử dụng duy nhất một thư viện mật mã chuẩn theo yêu cầu:
+- **Yêu cầu môi trường:** Python 3.10 trở lên (Windows / macOS / Linux).
+- **Cài đặt thư viện mật mã:**
   ```bash
   pip install cryptography
   ```
 
 ---
 
-## 5. Hướng dẫn Vận hành Hệ thống
+## 3. Hướng dẫn Chạy Hệ Thống
 
-### Cách 1: Chạy nhiều Client trên cùng 1 máy tính
+### Cách 1: Chạy trên cùng 1 máy tính (Localhost)
 
-1. **Khởi động Máy chủ Trung tâm (Terminal 1):**
+Mở 3 cửa sổ Terminal riêng biệt:
+
+1. **Terminal 1 – Khởi động Server trung tâm:**
    ```bash
    python -m server.run_server
    ```
-   *(Server lắng nghe trên `0.0.0.0` với TCP port `8888` và UDP port `8889`).*
+   *(Server lắng nghe tại `0.0.0.0:8888` cho TCP và `8889` cho UDP).*
 
-2. **Khởi động Client Alice (Terminal 2):**
+2. **Terminal 2 – Khởi động Client Alice:**
    ```bash
    python -m client.run_client Alice
    ```
-   *(Hệ thống tự khởi chạy máy chủ Web socket thuần tại `http://127.0.0.1:5001`, đăng nhập `Alice` và tự động mở trình duyệt).*
+   *(Tự động mở trình duyệt Web Dashboard tại `http://127.0.0.1:5001`).*
 
-3. **Khởi động Client Bob (Terminal 3):**
+3. **Terminal 3 – Khởi động Client Bob:**
    ```bash
    python -m client.run_client Bob
    ```
-   *(Hệ thống tự động chuyển sang cổng tiếp theo `http://127.0.0.1:5002`, đăng nhập `Bob` và tự động mở trình duyệt).*
+   *(Tự động mở trình duyệt Web Dashboard tại `http://127.0.0.1:5002`).*
 
-4. **(Tùy chọn) Khởi động không cần truyền tên trước:**
-   ```bash
-   python -m client.run_client
-   ```
-   *(Trình duyệt sẽ mở Web UI, bấm nút **Connect** ở góc trên bên phải để nhập tên và server IP).*
+*(Bạn có thể mở thêm nhiều client khác như Trudy, David... bằng lệnh `python -m client.run_client <Tên>` tương tự).*
 
 ---
 
-### Cách 2: Vận hành trên 2 Máy tính khác nhau (Mạng LAN / Wi-Fi)
+### Cách 2: Chạy trên 2 máy tính khác nhau (Cùng mạng LAN / Wi-Fi)
 
-1. **Trên Máy 1 (chạy Server & Alice):**
-   - Mở Terminal gõ `ipconfig` (hoặc `ifconfig` trên Linux/macOS) lấy địa chỉ IPv4 (ví dụ: `192.168.1.15`).
+1. **Trên Máy 1 (Server & Alice):**
+   - Mở Terminal gõ `ipconfig` (hoặc `ifconfig` trên Linux/macOS) để lấy địa chỉ IPv4 (ví dụ: `192.168.1.15`).
    - Khởi động Server:
      ```bash
      python -m server.run_server
@@ -135,53 +69,54 @@ assignment1/
      python -m client.run_client Alice
      ```
 
-2. **Trên Máy 2 (Client Bob kết nối tới Máy 1):**
-   - Chạy lệnh kết nối tới IP của Máy 1:
+2. **Trên Máy 2 (Client Bob kết nối sang Máy 1):**
+   - Chạy lệnh kết nối tới IP Máy 1:
      ```bash
      python -m client.run_client Bob --host 192.168.1.15
      ```
-   *(Trình duyệt trên Máy 2 sẽ mở Web UI và kết nối trực tiếp đến Server tại `192.168.1.15:8888`).*
+   *(Trình duyệt trên Máy 2 sẽ tự động mở Web UI và kết nối trực tiếp đến Server tại `192.168.1.15:8888`).*
 
 ---
 
-### Hướng dẫn Sử dụng Giao diện Web UI
+## 4. Hướng dẫn Sử dụng Giao diện Web UI
 
-- **Global Chat (🌐):** Chọn kênh *Global Chat* ở thanh bên trái, nhập tin nhắn để gửi cho toàn bộ người dùng đang online.
-- **Direct Message (💬):** Nhấp chuột vào tên một người dùng cụ thể trong mục *DIRECT MESSAGES* để gửi tin nhắn riêng tư End-to-End Encrypted.
-- **UDP File Streaming (📁):** 
+- **Chat công khai (Global Chat 🌐):** Chọn kênh *Global Chat* ở cột bên trái để gửi tin nhắn đến tất cả mọi người đang online.
+- **Chat riêng tư (Direct Messages 💬):** Nhấp chọn một người dùng cụ thể (như Bob, Trudy) để gửi tin nhắn trực tiếp được mã hóa E2EE.
+- **Hệ thống thông báo:** 
+  - Tiêu đề tab trình duyệt tự động cập nhật tổng số tin nhắn chưa đọc: `(3) Assignment 1...`
+  - Từng kênh/người gửi hiển thị huy hiệu đỏ chứa số lượng tin chưa đọc. Khi nhấp vào đọc, thông báo sẽ tự động biến mất.
+- **Truyền file UDP Streaming (📁):** 
   - Tại bảng bên phải, chọn người nhận trong menu *Recipient Peer*.
-  - Bấm *Select File* để chọn tệp cần gửi (hỗ trợ mọi định dạng tệp).
-  - Bấm *Start UDP Streaming Transfer*: thanh tiến trình sẽ cập nhật từ $0\%$ đến $100\%$ theo thời gian thực.
-  - Phía người nhận sẽ xuất hiện nút **Open** để mở tệp ngay trên trình duyệt (tệp được lưu tại `client/downloads/`).
+  - Nhấp *Select File* để chọn tệp tin bất kỳ từ máy tính.
+  - Bấm *Start UDP Streaming Transfer*: thanh tiến trình sẽ chạy mượt mà từ $0\%$ đến $100\%$.
+  - Người nhận sẽ thấy nút **Open** để mở tệp ngay lập tức (tệp được lưu tại thư mục `client/downloads/`).
 
 ---
 
-## 6. Chạy Kiểm thử Tự động (Automated Test Suite)
+## 5. Chạy Kiểm Thử Tự Động (Unit Tests)
 
-Dự án cung cấp bộ kiểm thử gồm **15 bài test tự động** kiểm chứng 100% các tiêu chí kỹ thuật:
+Bộ kiểm thử tự động gồm **15 bài test** kiểm tra toàn bộ giao thức nhị phân, giải thuật Selective Repeat ARQ dưới 20% mất gói ngẫu nhiên, mô phỏng tải 15 clients đồng thời và REST API:
 
 ```bash
-# Chạy toàn bộ 15 bài test cùng lúc (Khuyên dùng):
-python -m unittest discover tests
+python -m unittest discover tests -v
 ```
 
-Hoặc chạy độc lập từng bộ test:
-```bash
-# 1. Kiểm thử đóng gói Header 20B, CRC32 và mã hóa AES-256-GCM (Step 1 & 8)
-python -m unittest tests/test_protocol.py
-
-# 2. Kiểm thử truyền file Selective Repeat ARQ dưới 20% mất gói và đối soát SHA-256 (Step 6)
-python -m unittest tests/test_udp_stream.py
-
-# 3. Kiểm thử tải đồng thời 15 clients, chịu lỗi sập nguồn và REST API CO3094 (Step 2, 3, 4, 5, 7, 9)
-python -m unittest tests/test_integration.py
-```
-
-**Kết quả kiểm thử:**
+**Kết quả mong đợi:**
 ```text
-...............
-----------------------------------------------------------------------
-Ran 15 tests in 6.452s
+Ran 15 tests ... OK
+```
 
-OK
+---
+
+## 6. Cấu trúc Thư mục
+
+```text
+assignment1/
+├── protocol/               # Giao thức TCP Framing 20B, CRC32, AES-256-GCM, UDP Selective Repeat
+├── server/                 # Server đa luồng TCP/UDP, quản lý phiên và Watchdog tự động
+├── client/                 # Client networking engine, Server HTTP socket thuần & Web Dashboard
+│   ├── downloads/          # Thư mục lưu tệp nhận qua UDP
+│   └── web/                # Giao diện Web UI (index.html, style.css, app.js)
+├── tests/                  # Bộ 15 bài kiểm thử tự động hóa toàn diện
+└── README.md               # Hướng dẫn cài đặt và vận hành
 ```
