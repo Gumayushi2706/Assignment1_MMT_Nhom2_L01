@@ -1,6 +1,6 @@
 """
-NexusStream - Client Core Networking Engine.
-Manages dual-plane connectivity: TCP for control/messaging and UDP for sliding-window file streaming.
+CO3093 - Client Core Networking Engine.
+Manages dual-plane connectivity: TCP for signaling/messaging and UDP for sliding-window file streaming.
 """
 
 import socket
@@ -8,7 +8,6 @@ import threading
 import time
 import os
 import hashlib
-import json
 import logging
 
 from protocol.packet import Packet, MsgType, PacketFlags, send_packet, recv_packet
@@ -100,12 +99,10 @@ class CollaborationClient:
                     return False, f"Unexpected response: {resp.msg_type.name}"
         except Exception as e:
             logger.error(f"Error connecting to server: {e}")
-            if self.tcp_sock:
-                try: self.tcp_sock.close()
-                except Exception: pass
-            if self.udp_sock:
-                try: self.udp_sock.close()
-                except Exception: pass
+            for s in (self.tcp_sock, self.udp_sock):
+                if s:
+                    try: s.close()
+                    except Exception: pass
             return False, str(e)
 
     def disconnect(self):
@@ -114,6 +111,12 @@ class CollaborationClient:
             return
         self.running = False
         self.is_connected = False
+        with self.lock:
+            for sender in list(self.active_senders.values()):
+                try: sender.cancel()
+                except Exception: pass
+            self.active_senders.clear()
+            self.active_receivers.clear()
         try:
             if self.tcp_sock:
                 send_packet(self.tcp_sock, Packet(MsgType.DISCONNECT, payload=b"BYE"))
@@ -124,33 +127,32 @@ class CollaborationClient:
             pass
         logger.debug(f"Client '{self.username}' disconnected cleanly.")
 
-    def send_broadcast_message(self, text):
-        """Send an encrypted broadcast message to global chat (Step 5 & 8)."""
+    def _send_chat(self, target, text, is_broadcast):
+        """Unified helper to send encrypted broadcast or unicast chat message."""
         if not self.is_connected: return False
         enc = default_crypto.encrypt_string(text)
-        pkt = Packet.json_payload(MsgType.MSG_BROADCAST, {"text": enc}, seq=self._next_seq(), flags=PacketFlags.ENCRYPTED)
+        mtype = MsgType.MSG_BROADCAST if is_broadcast else MsgType.MSG_UNICAST
+        payload = {"text": enc} if is_broadcast else {"target": target, "text": enc}
+        pkt = Packet.json_payload(mtype, payload, seq=self._next_seq(), flags=PacketFlags.ENCRYPTED)
         try:
             send_packet(self.tcp_sock, pkt)
             with self.lock:
-                self.messages.append({"id": self.seq_counter, "sender": self.username, "target": "ALL", "text": text, "timestamp": time.time(), "is_broadcast": True, "is_mine": True})
+                self.messages.append({
+                    "id": self.seq_counter, "sender": self.username, "target": target,
+                    "text": text, "timestamp": time.time(), "is_broadcast": is_broadcast, "is_mine": True
+                })
             return True
         except Exception as e:
-            logger.warning(f"Error sending broadcast message: {e}")
+            logger.warning(f"Error sending message: {e}")
             return False
+
+    def send_broadcast_message(self, text):
+        """Send an encrypted broadcast message to global chat (Step 5 & 8)."""
+        return self._send_chat("ALL", text, True)
 
     def send_unicast_message(self, target_user, text):
         """Send an encrypted direct message to a specific peer (Step 5 & 8)."""
-        if not self.is_connected: return False
-        enc = default_crypto.encrypt_string(text)
-        pkt = Packet.json_payload(MsgType.MSG_UNICAST, {"target": target_user, "text": enc}, seq=self._next_seq(), flags=PacketFlags.ENCRYPTED)
-        try:
-            send_packet(self.tcp_sock, pkt)
-            with self.lock:
-                self.messages.append({"id": self.seq_counter, "sender": self.username, "target": target_user, "text": text, "timestamp": time.time(), "is_broadcast": False, "is_mine": True})
-            return True
-        except Exception as e:
-            logger.warning(f"Error sending direct message: {e}")
-            return False
+        return self._send_chat(target_user, text, False)
 
     def send_file(self, target_user, file_path=None, file_bytes=None, filename=None):
         """Stream a file reliably over UDP using Selective Repeat (Step 6)."""
@@ -159,11 +161,11 @@ class CollaborationClient:
         if file_bytes is None:
             if not file_path or not os.path.exists(file_path):
                 return False, "File does not exist"
-            filename = filename or os.path.basename(file_path)
+            filename = os.path.basename(filename or file_path)
             with open(file_path, "rb") as f:
                 file_data = f.read()
         else:
-            filename = filename or "uploaded_file.bin"
+            filename = os.path.basename(filename or "uploaded_file.bin") or "uploaded_file.bin"
             file_data = file_bytes
 
         file_size = len(file_data)
@@ -178,6 +180,8 @@ class CollaborationClient:
         if target_ip in ("127.0.0.1", "0.0.0.0"):
             target_ip = self.server_host if self.server_host not in ("127.0.0.1", "localhost", "0.0.0.0") else "127.0.0.1"
         target_udp_port = target_info.get("udp_port", 0)
+        if not target_udp_port or target_udp_port <= 0:
+            return False, f"Target user '{target_user}' has invalid UDP port ({target_udp_port})"
 
         with self.lock:
             self.transfers[stream_id] = {
@@ -199,7 +203,11 @@ class CollaborationClient:
         # Send signaling announcement over TCP
         announce = Packet.json_payload(
             MsgType.FILE_ANNOUNCE,
-            {"target": target_user, "filename": filename, "file_size": file_size, "sha256": file_hash, "stream_id": stream_id, "total_chunks": sender.total_chunks, "sender_udp_port": self.udp_port}
+            {
+                "target": target_user, "filename": filename, "file_size": file_size,
+                "sha256": file_hash, "stream_id": stream_id,
+                "total_chunks": sender.total_chunks, "sender_udp_port": self.udp_port
+            }
         )
         send_packet(self.tcp_sock, announce)
         time.sleep(0.05)
@@ -216,6 +224,7 @@ class CollaborationClient:
             except (ConnectionResetError, BrokenPipeError, EOFError, OSError):
                 logger.debug("Connection lost to server.")
                 self.is_connected = False
+                self.running = False
                 break
             except Exception:
                 continue
@@ -251,11 +260,26 @@ class CollaborationClient:
                         "is_mine": False
                     })
 
+            elif msg_type == MsgType.MSG_DELIVERY_ACK:
+                data = pkt.to_json()
+                if data.get("status") == "USER_NOT_FOUND":
+                    tgt = data.get("target", "unknown")
+                    with self.lock:
+                        self.messages.append({
+                            "id": pkt.seq,
+                            "sender": "SYSTEM",
+                            "target": self.username,
+                            "text": f"Cannot deliver message: user '{tgt}' is offline.",
+                            "timestamp": time.time(),
+                            "is_broadcast": False,
+                            "is_mine": False
+                        })
+
             elif msg_type == MsgType.FILE_ANNOUNCE:
                 data = pkt.to_json()
                 stream_id = data.get("stream_id")
-                filename = data.get("filename")
-                file_size = data.get("file_size")
+                filename = os.path.basename(data.get("filename", "file.bin")) or "file.bin"
+                file_size = data.get("file_size", 0)
                 total_chunks = data.get("total_chunks", max(1, (file_size + 1199) // 1200))
 
                 with self.lock:
@@ -311,7 +335,7 @@ class CollaborationClient:
         try:
             file_bytes = receiver.reassemble()
             info = self.transfers.get(stream_id, {})
-            filename = info.get("filename", f"file_{stream_id}.bin")
+            filename = os.path.basename(info.get("filename", f"file_{stream_id}.bin")) or f"file_{stream_id}.bin"
             actual_hash = hashlib.sha256(file_bytes).hexdigest()
             save_path = os.path.join(self.download_dir, filename)
 

@@ -7,38 +7,11 @@ import os
 import sys
 import socket
 import threading
-import time
-import random
 import hashlib
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from protocol.udp_stream import StreamSender, StreamReceiver, UDPPacket, TYPE_DATA, TYPE_ACK, TYPE_FIN
-
-
-class LossyProxy(threading.Thread):
-    """Simulates network jitter, reordering, and packet loss."""
-    def __init__(self, in_port, out_port, loss_rate=0.15):
-        super().__init__(daemon=True)
-        self.loss_rate = loss_rate
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind(("127.0.0.1", in_port))
-        self.out_port = out_port
-        self.running = True
-
-    def run(self):
-        while self.running:
-            try:
-                data, addr = self.sock.recvfrom(65535)
-                if random.random() < self.loss_rate:
-                    continue
-                self.sock.sendto(data, ("127.0.0.1", self.out_port))
-            except Exception:
-                break
-
-    def stop(self):
-        self.running = False
-        self.sock.close()
+from protocol.udp_stream import StreamSender, StreamReceiver, UDPPacket, TYPE_DATA, TYPE_ACK
 
 
 class TestUDPStream(unittest.TestCase):
@@ -94,18 +67,21 @@ class TestUDPStream(unittest.TestCase):
         send_thread = threading.Thread(target=sender.send_loop, daemon=True)
         send_thread.start()
 
-        send_thread.join(timeout=10.0)
-        self.assertTrue(sender.finished, "Sender did not finish transmission in time")
-        self.assertTrue(receiver.is_complete(), "Receiver did not receive all chunks")
+        try:
+            send_thread.join(timeout=10.0)
+            self.assertTrue(sender.finished, "Sender did not finish transmission in time")
+            self.assertTrue(receiver.is_complete(), "Receiver did not receive all chunks")
 
-        reassembled = receiver.reassemble()
-        self.assertEqual(hashlib.sha256(reassembled).hexdigest(), hashlib.sha256(test_data).hexdigest())
-
-        stop_recv = True
-        recv_thread.join(timeout=0.3)
-        ack_thread.join(timeout=0.3)
-        sender_sock.close()
-        receiver_sock.close()
+            reassembled = receiver.reassemble()
+            self.assertEqual(hashlib.sha256(reassembled).hexdigest(), hashlib.sha256(test_data).hexdigest())
+        finally:
+            stop_recv = True
+            recv_thread.join(timeout=0.3)
+            ack_thread.join(timeout=0.3)
+            try: sender_sock.close()
+            except Exception: pass
+            try: receiver_sock.close()
+            except Exception: pass
 
 
 if __name__ == '__main__':

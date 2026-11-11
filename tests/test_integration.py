@@ -1,5 +1,5 @@
 """
-Comprehensive Integration & Scalability Tests for NexusStream.
+Comprehensive Integration & Scalability Tests for CO3093 Collaboration System.
 Covers Handshake, Concurrency (15 clients), Unicast Messaging, UDP Streaming, and Resilience on Abrupt Disconnect.
 """
 
@@ -142,25 +142,111 @@ class TestIntegration(unittest.TestCase):
     def test_05_resilience_on_abrupt_disconnect(self):
         """Test server resilience when a client abruptly resets connection (RST)."""
         raw_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        raw_sock.connect(("127.0.0.1", self.server_tcp_port))
+        try:
+            raw_sock.connect(("127.0.0.1", self.server_tcp_port))
 
-        from protocol.packet import Packet, MsgType, send_packet, recv_packet
-        send_packet(raw_sock, Packet(MsgType.HANDSHAKE_REQ, payload=b"HELLO"))
-        recv_packet(raw_sock)
-        send_packet(raw_sock, Packet.json_payload(MsgType.AUTH_LOGIN, {"username": "CrashingUser", "udp_port": 12345}))
-        recv_packet(raw_sock)
+            from protocol.packet import Packet, MsgType, send_packet, recv_packet
+            send_packet(raw_sock, Packet(MsgType.HANDSHAKE_REQ, payload=b"HELLO"))
+            recv_packet(raw_sock)
+            send_packet(raw_sock, Packet.json_payload(MsgType.AUTH_LOGIN, {"username": "CrashingUser", "udp_port": 12345}))
+            recv_packet(raw_sock)
 
-        self.assertIsNotNone(self.server.user_manager.get_user("CrashingUser"))
+            self.assertIsNotNone(self.server.user_manager.get_user("CrashingUser"))
 
-        # Force abrupt socket reset
-        raw_sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b'\x01\x00\x00\x00\x00\x00\x00\x00')
-        raw_sock.close()
+            # Force abrupt socket reset
+            raw_sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b'\x01\x00\x00\x00\x00\x00\x00\x00')
+        finally:
+            raw_sock.close()
         time.sleep(0.5)
 
         test_client = CollaborationClient(server_host="127.0.0.1", server_tcp_port=self.server_tcp_port)
         ok, msg = test_client.connect_and_login("HealthyClient")
         self.assertTrue(ok)
         test_client.disconnect()
+
+    def test_06_unicast_to_offline_user_ack(self):
+        """Test server returns USER_NOT_FOUND when unicast target is not online."""
+        sender = CollaborationClient(server_host="127.0.0.1", server_tcp_port=self.server_tcp_port)
+        ok, msg = sender.connect_and_login("UnicastSender")
+        self.assertTrue(ok)
+        time.sleep(0.2)
+
+        sender.send_unicast_message("NonExistentUser123", "Hello ghost")
+        time.sleep(0.3)
+
+        sys_messages = [m["text"] for m in sender.messages if m["sender"] == "SYSTEM"]
+        self.assertTrue(any("offline" in m.lower() for m in sys_messages), f"Expected offline notice in: {sys_messages}")
+        sender.disconnect()
+
+    def test_07_web_server_path_traversal_defense(self):
+        """Test RawSocketHTTPServer blocks directory traversal attempts in /downloads/."""
+        from client.web_server import RawSocketHTTPServer
+        import urllib.request
+        dummy_client = CollaborationClient()
+        web_server = RawSocketHTTPServer(dummy_client, host="127.0.0.1", port=15088)
+        web_server.start()
+        time.sleep(0.3)
+
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{web_server.port}/downloads/../../README.md")
+            try:
+                resp = urllib.request.urlopen(req)
+                resp.close()
+                self.fail("Path traversal succeeded unexpectedly")
+            except urllib.error.HTTPError as e:
+                self.assertEqual(e.code, 404)
+                e.close()
+        finally:
+            web_server.stop()
+
+    def test_08_co3094_rest_apis(self):
+        """Test CO3094 RESTful endpoints: /login, /get-list, /broadcast-peer, /logout, and cookies."""
+        from client.web_server import RawSocketHTTPServer
+        import urllib.request
+        import json
+
+        client = CollaborationClient()
+        web_server = RawSocketHTTPServer(client, host="127.0.0.1", port=15099)
+        web_server.start()
+        time.sleep(0.3)
+
+        try:
+            # Test /login endpoint with JSON payload and cookie emission
+            login_payload = json.dumps({"username": "RestUser", "server_ip": "127.0.0.1", "server_port": self.server_tcp_port}).encode('utf-8')
+            req = urllib.request.Request(f"http://127.0.0.1:{web_server.port}/login", data=login_payload, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req) as resp:
+                self.assertEqual(resp.status, 200)
+                body = json.loads(resp.read().decode('utf-8'))
+                self.assertTrue(body.get("success"))
+                set_cookie = resp.headers.get("Set-Cookie", "")
+                self.assertIn("session_user=RestUser", set_cookie)
+
+            # Test /get-list endpoint
+            req = urllib.request.Request(f"http://127.0.0.1:{web_server.port}/get-list")
+            with urllib.request.urlopen(req) as resp:
+                self.assertEqual(resp.status, 200)
+                body = json.loads(resp.read().decode('utf-8'))
+                self.assertEqual(body.get("username"), "RestUser")
+                self.assertTrue(body.get("is_connected"))
+
+            # Test /broadcast-peer endpoint
+            msg_payload = json.dumps({"message": "Hello from CO3094 REST"}).encode('utf-8')
+            req = urllib.request.Request(f"http://127.0.0.1:{web_server.port}/broadcast-peer", data=msg_payload, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req) as resp:
+                self.assertEqual(resp.status, 200)
+                body = json.loads(resp.read().decode('utf-8'))
+                self.assertTrue(body.get("success"))
+
+            # Test /logout endpoint
+            req = urllib.request.Request(f"http://127.0.0.1:{web_server.port}/logout", data=b"{}", headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req) as resp:
+                self.assertEqual(resp.status, 200)
+                body = json.loads(resp.read().decode('utf-8'))
+                self.assertTrue(body.get("success"))
+
+        finally:
+            client.disconnect()
+            web_server.stop()
 
 
 if __name__ == '__main__':

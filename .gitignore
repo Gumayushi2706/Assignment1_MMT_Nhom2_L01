@@ -20,5 +20,6 @@ client/downloads/*
 # Excluded reports & slides
 *.tex
 Slide_Assignment1.pdf
+Report_BTL1.pdf
 
 

@@ -1,5 +1,5 @@
 """
-NexusStream - Security Layer (AES-256-GCM AEAD Cryptography).
+CO3093 - Security Layer (AES-256-GCM AEAD Cryptography).
 Implements authenticated payload encryption with 256-bit symmetric keys and 96-bit random nonces.
 """
 

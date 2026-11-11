@@ -1,16 +1,15 @@
-// Client-side UI Controller for NexusStream Collaboration App
+// Client-side UI Controller for Assignment 1
 let currentChannel = "ALL";
-let selectedFile = null;
 let isConnected = false;
-let lastRenderedChannel = null;
-let lastRenderedMsgCount = -1;
-let lastPeersKey = "";
+let selectedFile = null;
 
+// Periodic polling every 1 second
 document.addEventListener("DOMContentLoaded", () => {
   fetchState();
   setInterval(fetchState, 1000);
 });
 
+// Toggle Connection Modal
 function toggleConnectModal() {
   const modal = document.getElementById("modal-connect");
   modal.classList.toggle("hidden");
@@ -19,15 +18,13 @@ function toggleConnectModal() {
   }
 }
 
+// Connect to Server using Username, Host IP, and Port
 async function connectToServer() {
   const username = document.getElementById("input-username").value.trim();
-  const host = (document.getElementById("input-host") ? document.getElementById("input-host").value : "127.0.0.1").trim() || "127.0.0.1";
-  const port = parseInt(document.getElementById("input-port") ? document.getElementById("input-port").value : "8888", 10) || 8888;
+  const host = (document.getElementById("input-host")?.value || "127.0.0.1").trim();
+  const port = parseInt(document.getElementById("input-port")?.value || "8888", 10);
 
-  if (!username) {
-    alert("Please enter your username!");
-    return;
-  }
+  if (!username) return alert("Please enter username!");
 
   try {
     const res = await fetch("/api/connect", {
@@ -40,13 +37,14 @@ async function connectToServer() {
       toggleConnectModal();
       fetchState();
     } else {
-      alert("Connection failed: " + data.message);
+      alert("Connect failed: " + data.message);
     }
   } catch (err) {
-    alert("Error reaching local client server: " + err);
+    alert("Error connecting: " + err);
   }
 }
 
+// Disconnect from Server
 async function disconnectFromServer() {
   try {
     await fetch("/api/disconnect", { method: "POST" });
@@ -56,277 +54,182 @@ async function disconnectFromServer() {
   }
 }
 
+// Fetch Client State (Peers, Messages, Transfers)
 async function fetchState() {
   try {
     const res = await fetch("/api/state");
-    const state = await res.json();
+    const s = await res.json();
 
-    isConnected = state.is_connected;
-    updateStatusHeader(state);
-    updatePeersList(state.active_users, state.username);
-    updateMessages(state.messages, state.username);
-    updateTransfers(state.transfers);
+    isConnected = s.is_connected;
+    updateHeader(s);
+    updatePeers(s.active_users, s.username);
+    renderMessages(s.messages, s.username);
+    renderTransfers(s.transfers);
   } catch (err) {
-    console.warn("Error fetching client state:", err);
+    console.warn("State fetch error:", err);
   }
 }
 
-function updateStatusHeader(state) {
-  const statusInd = document.getElementById("status-indicator");
-  const statusText = document.getElementById("status-text");
-  const userChip = document.getElementById("current-user-info");
-  const btnToggle = document.getElementById("btn-toggle-connect");
+// Update Top Navigation Bar
+function updateHeader(s) {
+  const ind = document.getElementById("status-indicator");
+  const txt = document.getElementById("status-text");
+  const chip = document.getElementById("current-user-info");
+  const btn = document.getElementById("btn-toggle-connect");
 
-  if (state.is_connected) {
-    statusInd.className = "status-indicator connected";
-    statusText.textContent = "Online";
-    userChip.classList.remove("hidden");
-    document.getElementById("my-username").textContent = state.username;
-    document.getElementById("my-avatar").textContent = state.username.charAt(0).toUpperCase();
-    document.getElementById("my-udp-port").textContent = "UDP: " + state.udp_port;
-
-    btnToggle.textContent = "Disconnect";
-    btnToggle.className = "btn btn-secondary";
-    btnToggle.onclick = disconnectFromServer;
+  if (s.is_connected) {
+    ind.className = "status-indicator connected";
+    txt.textContent = "Online";
+    chip.classList.remove("hidden");
+    document.getElementById("my-avatar").textContent = (s.username || "U")[0].toUpperCase();
+    document.getElementById("my-username").textContent = s.username;
+    document.getElementById("my-udp-port").textContent = "UDP: " + s.udp_port;
+    btn.textContent = "Disconnect";
+    btn.className = "btn btn-secondary";
+    btn.onclick = disconnectFromServer;
   } else {
-    statusInd.className = "status-indicator disconnected";
-    statusText.textContent = "Disconnected";
-    userChip.classList.add("hidden");
-
-    btnToggle.textContent = "Connect";
-    btnToggle.className = "btn btn-primary";
-    btnToggle.onclick = toggleConnectModal;
+    ind.className = "status-indicator disconnected";
+    txt.textContent = "Disconnected";
+    chip.classList.add("hidden");
+    btn.textContent = "Connect";
+    btn.className = "btn btn-primary";
+    btn.onclick = toggleConnectModal;
   }
 }
 
-function updatePeersList(peers, myUsername) {
+// Update Sidebar Peers and Recipient Select
+function updatePeers(peers, myUsername) {
   const container = document.getElementById("peers-container");
-  const targetSelect = document.getElementById("file-target-select");
-  const userCountEl = document.getElementById("user-count");
+  const select = document.getElementById("file-target-select");
+  const others = (peers || []).filter(p => p.username !== myUsername);
 
-  const otherPeers = peers.filter(p => p.username !== myUsername);
-  userCountEl.textContent = peers.length;
+  document.getElementById("user-count").textContent = (peers || []).length;
 
-  const peersKey = JSON.stringify(otherPeers.map(p => ({ u: p.username, ip: p.ip, port: p.udp_port }))) + "_" + currentChannel;
-  if (peersKey === lastPeersKey) {
-    return;
-  }
-  lastPeersKey = peersKey;
-
-  const currentSelectVal = targetSelect.value;
-  targetSelect.innerHTML = '<option value="">Select a peer...</option>';
-
-  if (otherPeers.length === 0) {
+  if (others.length === 0) {
     container.innerHTML = '<div class="empty-hint">No other peers online</div>';
-    return;
-  }
-
-  container.innerHTML = "";
-  otherPeers.forEach(peer => {
-    const item = document.createElement("div");
-    item.className = "peer-item" + (currentChannel === peer.username ? " active" : "");
-    item.onclick = () => selectChannel(peer.username);
-
-    item.innerHTML = `
-      <span class="avatar">${peer.username.charAt(0).toUpperCase()}</span>
-      <div class="peer-meta">
-        <span class="peer-name">${escapeHtml(peer.username)}</span>
-        <span class="peer-status">${peer.ip}:${peer.udp_port}</span>
+  } else {
+    container.innerHTML = others.map(p => `
+      <div class="peer-item ${currentChannel === p.username ? 'active' : ''}" onclick="selectChannel('${escapeHtml(p.username)}')">
+        <span class="avatar">${escapeHtml(p.username[0].toUpperCase())}</span>
+        <div class="peer-meta">
+          <span class="peer-name">${escapeHtml(p.username)}</span>
+          <span class="peer-status">${p.ip}:${p.udp_port}</span>
+        </div>
       </div>
-    `;
-    container.appendChild(item);
-
-    const opt = document.createElement("option");
-    opt.value = peer.username;
-    opt.textContent = `${peer.username} (${peer.ip}:${peer.udp_port})`;
-    targetSelect.appendChild(opt);
-  });
-
-  if (currentSelectVal) {
-    targetSelect.value = currentSelectVal;
+    `).join("");
   }
+
+  const currentVal = select.value;
+  select.innerHTML = '<option value="">Select a peer...</option>' +
+    others.map(p => `<option value="${escapeHtml(p.username)}">${escapeHtml(p.username)} (${p.ip}:${p.udp_port})</option>`).join("");
+  if (currentVal && others.some(p => p.username === currentVal)) select.value = currentVal;
 }
 
-function selectChannel(channel) {
-  if (currentChannel === channel) return;
-  currentChannel = channel;
-  lastPeersKey = "";
-  lastRenderedChannel = null;
-
-  document.getElementById("channel-global").className = "channel-item" + (channel === "ALL" ? " active" : "");
-
-  document.querySelectorAll(".peer-item").forEach(el => {
-    const nameEl = el.querySelector(".peer-name");
-    if (nameEl && nameEl.textContent === channel) {
-      el.classList.add("active");
-    } else {
-      el.classList.remove("active");
-    }
-  });
-
-  const headerIcon = document.getElementById("chat-header-icon");
-  const headerName = document.getElementById("chat-target-name");
-
-  if (channel === "ALL") {
-    headerIcon.textContent = "🌐";
-    headerName.textContent = "Global Chat";
-  } else {
-    headerIcon.textContent = "💬";
-    headerName.textContent = "@" + channel;
-  }
-
+// Switch between Global Chat and Direct Peer Chat
+function selectChannel(ch) {
+  currentChannel = ch;
+  document.getElementById("channel-global").className = "channel-item" + (ch === "ALL" ? " active" : "");
+  document.getElementById("chat-header-icon").textContent = ch === "ALL" ? "🌐" : "💬";
+  document.getElementById("chat-target-name").textContent = ch === "ALL" ? "Global Chat" : "@" + ch;
   fetchState();
 }
 
-function createBubbleElement(m, myUsername, isNew = false) {
-  const isMine = m.sender === myUsername;
-  const bubble = document.createElement("div");
-  bubble.className = "chat-bubble " + (isMine ? "mine" : "other") + (isNew ? " new-arrival" : "");
+// Render Messages for Current Channel
+function renderMessages(messages, myUsername) {
+  const vp = document.getElementById("messages-viewport");
+  const filtered = (messages || []).filter(m =>
+    currentChannel === "ALL" ? m.is_broadcast :
+    (!m.is_broadcast && ((m.sender === currentChannel && m.target === myUsername) || (m.sender === myUsername && m.target === currentChannel)))
+  );
 
-  const timeStr = new Date(m.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
-  bubble.innerHTML = `
-    <div class="bubble-meta">
-      <span class="sender-name">${escapeHtml(m.sender)}</span>
-      <span>•</span>
-      <span class="timestamp">${timeStr}</span>
-    </div>
-    <div class="bubble-content">${escapeHtml(m.text)}</div>
-  `;
-  return bubble;
-}
-
-function updateMessages(messages, myUsername) {
-  const viewport = document.getElementById("messages-viewport");
-
-  const filtered = messages.filter(m => {
-    if (currentChannel === "ALL") {
-      return m.is_broadcast === true;
-    } else {
-      return (
-        (!m.is_broadcast && m.sender === currentChannel && m.target === myUsername) ||
-        (!m.is_broadcast && m.sender === myUsername && m.target === currentChannel)
-      );
-    }
-  });
-
-  if (lastRenderedChannel !== currentChannel) {
-    lastRenderedChannel = currentChannel;
-    lastRenderedMsgCount = filtered.length;
-    viewport.innerHTML = "";
-
-    if (filtered.length === 0) {
-      viewport.innerHTML = `<div class="message-notice">No messages in ${currentChannel === "ALL" ? "Global Chat" : "@" + currentChannel} yet.</div>`;
-      return;
-    }
-
-    filtered.forEach(m => {
-      viewport.appendChild(createBubbleElement(m, myUsername, false));
-    });
-    viewport.scrollTop = viewport.scrollHeight;
+  if (filtered.length === 0) {
+    vp.innerHTML = `<div class="message-notice">No messages in ${currentChannel === "ALL" ? "Global Chat" : "@" + currentChannel} yet.</div>`;
     return;
   }
 
-  if (filtered.length === lastRenderedMsgCount) {
-    return;
-  }
+  const shouldScroll = vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 60;
+  vp.innerHTML = filtered.map(m => {
+    const isMine = m.sender === myUsername;
+    const time = new Date((m.timestamp || Date.now() / 1000) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    return `
+      <div class="chat-bubble ${isMine ? 'mine' : 'other'}">
+        <div class="bubble-meta"><span>${escapeHtml(m.sender)}</span> • <span>${time}</span></div>
+        <div class="bubble-content">${escapeHtml(m.text)}</div>
+      </div>
+    `;
+  }).join("");
 
-  if (lastRenderedMsgCount === 0 || viewport.querySelector(".message-notice")) {
-    viewport.innerHTML = "";
-  }
-
-  const existingBubbles = viewport.querySelectorAll(".chat-bubble");
-  const startIndex = existingBubbles.length;
-
-  for (let i = startIndex; i < filtered.length; i++) {
-    viewport.appendChild(createBubbleElement(filtered[i], myUsername, true));
-  }
-
-  lastRenderedMsgCount = filtered.length;
-  viewport.scrollTop = viewport.scrollHeight;
+  if (shouldScroll) vp.scrollTop = vp.scrollHeight;
 }
 
+// Send Message
 async function sendMessage() {
   const input = document.getElementById("input-message");
   const text = input.value.trim();
   if (!text) return;
-
-  if (!isConnected) {
-    alert("Please connect to the collaboration server first.");
-    return;
-  }
+  if (!isConnected) return alert("Please connect to server first!");
 
   input.value = "";
   try {
     await fetch("/api/send_message", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        target: currentChannel,
-        text: text
-      })
+      body: JSON.stringify({ target: currentChannel, text })
     });
     fetchState();
   } catch (err) {
-    console.error("Failed to send message:", err);
+    console.error("Send error:", err);
   }
 }
 
 function handleChatKey(e) {
-  if (e.key === "Enter") {
-    sendMessage();
-  }
+  if (e.key === "Enter") sendMessage();
 }
 
+// File Selection
 function handleFileSelected(e) {
-  const file = e.target.files[0];
-  if (file) {
-    selectedFile = file;
-    const label = document.getElementById("file-picker-label");
-    if (label) {
-      label.textContent = `${file.name} (${formatBytes(file.size)})`;
-    }
-    const sendBtn = document.getElementById("btn-send-file");
-    if (sendBtn) {
-      sendBtn.disabled = false;
-    }
+  selectedFile = e.target.files[0];
+  const box = document.getElementById("file-picker-box");
+  const label = document.getElementById("file-picker-label");
+  const btn = document.getElementById("btn-send-file");
+
+  if (selectedFile) {
+    if (box) box.classList.add("selected");
+    if (label) label.textContent = `${selectedFile.name} (${formatBytes(selectedFile.size)})`;
+    btn.disabled = false;
+  } else {
+    if (box) box.classList.remove("selected");
+    if (label) label.textContent = "Click to select file";
+    btn.disabled = true;
   }
 }
 
+// Upload & Stream File over UDP
 async function uploadAndSendFile() {
   const target = document.getElementById("file-target-select").value;
-  if (!target) {
-    alert("Please choose a recipient peer for the file transfer.");
-    return;
-  }
-  if (!selectedFile) {
-    alert("Please select a file to transfer.");
-    return;
-  }
+  if (!target) return alert("Please choose recipient peer!");
+  if (!selectedFile) return alert("Please select a file!");
 
   const btn = document.getElementById("btn-send-file");
   btn.disabled = true;
   btn.textContent = "Streaming over UDP...";
 
   const reader = new FileReader();
-  reader.onload = async function () {
-    const base64Content = reader.result.split(",")[1];
+  reader.onload = async () => {
     try {
       const res = await fetch("/api/upload_and_send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          target: target,
+          target,
           filename: selectedFile.name,
-          content_b64: base64Content
+          content_b64: reader.result.split(",")[1]
         })
       });
       const data = await res.json();
-      if (!data.success) {
-        alert("Transfer failed: " + data.message);
-      }
+      if (!data.success) alert("Transfer failed: " + data.message);
     } catch (err) {
-      alert("Error initiating file stream: " + err);
+      alert("Streaming error: " + err);
     } finally {
       btn.textContent = "Start UDP Streaming Transfer";
       btn.disabled = false;
@@ -336,50 +239,45 @@ async function uploadAndSendFile() {
   reader.readAsDataURL(selectedFile);
 }
 
-function updateTransfers(transfers) {
+// Render UDP Transfers
+function renderTransfers(transfers) {
   const container = document.getElementById("transfers-container");
-  if (!transfers || transfers.length === 0) {
+  const list = transfers || [];
+  if (list.length === 0) {
     container.innerHTML = '<div class="empty-hint">No active transfers</div>';
     return;
   }
 
-  container.innerHTML = "";
-  transfers.forEach(t => {
-    const card = document.createElement("div");
-    card.className = "transfer-card";
-
-    const isDone = t.progress >= 100.0;
+  container.innerHTML = list.map(t => {
+    const isDone = t.progress >= 100;
     const roleIcon = t.role === "sender" ? "⬆" : "⬇";
-    const statusText = isDone ? "Completed" : (t.role === "sender" ? "Sending..." : "Receiving...");
+    const status = isDone ? "Completed" : (t.role === "sender" ? "Sending..." : "Receiving...");
     const downloadName = t.saved_filename || t.filename;
 
-    card.innerHTML = `
-      <div class="transfer-meta">
-        <span class="transfer-filename" title="${escapeHtml(t.filename)}">${roleIcon} ${escapeHtml(t.filename)}</span>
-        <span class="transfer-pct">${t.progress}%</span>
-      </div>
-      <div class="progress-track">
-        <div class="progress-bar" style="width: ${t.progress}%;"></div>
-      </div>
-      <div class="transfer-footer">
-        <span>${statusText} ${isDone && t.role === "receiver" ? `<a href="/downloads/${encodeURIComponent(downloadName)}" target="_blank" class="download-link">Open</a>` : ''}</span>
-        <span>${formatBytes(t.file_size)}</span>
+    return `
+      <div class="transfer-card">
+        <div class="transfer-meta">
+          <span class="transfer-filename" title="${escapeHtml(t.filename)}">${roleIcon} ${escapeHtml(t.filename)}</span>
+          <span class="transfer-pct">${t.progress}%</span>
+        </div>
+        <div class="progress-track"><div class="progress-bar" style="width: ${t.progress}%;"></div></div>
+        <div class="transfer-footer">
+          <span>${status} ${isDone && t.role === "receiver" ? `<a href="/downloads/${encodeURIComponent(downloadName)}" target="_blank" class="download-link">Open</a>` : ''}</span>
+          <span>${formatBytes(t.file_size)}</span>
+        </div>
       </div>
     `;
-    container.appendChild(card);
-  });
+  }).join("");
 }
 
 function formatBytes(bytes) {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
+  if (!bytes) return "0 B";
+  const k = 1024, sizes = ["B", "KB", "MB", "GB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  return (bytes / Math.pow(k, i)).toFixed(1) + " " + sizes[i];
 }
 
 function escapeHtml(text) {
-  if (!text) return "";
   const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
-  return text.replace(/[&<>"']/g, m => map[m]);
+  return String(text || "").replace(/[&<>"']/g, m => map[m]);
 }

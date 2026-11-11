@@ -1,5 +1,5 @@
 """
-NexusStream - Central Multi-Threaded Collaboration Server.
+CO3093 - Central Multi-Threaded Collaboration Server.
 Handles TCP signaling, user authentication, message routing, UDP file transfer signaling, and heartbeat tracking.
 """
 
@@ -12,7 +12,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from protocol.packet import Packet, MsgType, PacketFlags, send_packet, recv_packet
+from protocol.packet import Packet, MsgType, send_packet, recv_packet
 from server.user_manager import UserManager
 
 logger = logging.getLogger("CollaborationServer")
@@ -75,6 +75,11 @@ class CollaborationServer:
         for s in (self.tcp_sock, self.udp_sock):
             try:
                 s.close()
+            except Exception:
+                pass
+        for session in self.user_manager.get_all_sessions():
+            try:
+                session.tcp_sock.close()
             except Exception:
                 pass
         self._log("[Server] Stopped.")
@@ -192,9 +197,10 @@ class CollaborationServer:
             pass
         finally:
             if current_user:
-                self.user_manager.remove_user(current_user)
-                self._log(f"[-] '{current_user}' left")
-                self._broadcast_packet(Packet.json_payload(MsgType.USER_LEFT, {"username": current_user}))
+                removed_sess = self.user_manager.remove_user(current_user)
+                if removed_sess:
+                    self._log(f"[-] '{current_user}' left")
+                    self._broadcast_packet(Packet.json_payload(MsgType.USER_LEFT, {"username": current_user}))
             try:
                 sock.close()
             except Exception:
@@ -204,19 +210,13 @@ class CollaborationServer:
         """Periodically purge inactive users who fail to send heartbeats."""
         while self.running:
             time.sleep(5.0)
-            stale_users = self.user_manager.cleanup_inactive_users(timeout_sec=15.0)
-            for u in stale_users:
+            stale_sessions = self.user_manager.cleanup_inactive_users(timeout_sec=15.0)
+            for sess in stale_sessions:
+                u = sess.username
                 self._log(f"[-] '{u}' timed out")
+                try:
+                    sess.tcp_sock.close()
+                except Exception:
+                    pass
                 self._broadcast_packet(Packet.json_payload(MsgType.USER_LEFT, {"username": u, "reason": "Timeout"}))
 
-
-def main():
-    server = CollaborationServer()
-    try:
-        server.start()
-    except KeyboardInterrupt:
-        server.stop()
-
-
-if __name__ == '__main__':
-    main()

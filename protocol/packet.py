@@ -1,5 +1,5 @@
 """
-NexusStream - Custom Binary TCP Application Framing Protocol.
+CO3093 - Custom Binary TCP Application Framing Protocol.
 Fixed 20-byte Header: Magic (2B) | Ver (1B) | Type (1B) | Flags (1B) | Reserved (3B) | Seq (4B) | Length (4B) | CRC32 (4B)
 """
 
@@ -10,6 +10,7 @@ import json
 
 MAGIC = 0x4353  # 'CS' (Collaboration Streaming)
 PROTOCOL_VERSION = 1
+MAX_PACKET_PAYLOAD = 10 * 1024 * 1024  # 10 MB maximum for TCP signaling
 
 HEADER_FORMAT = "!HBBB3sIII"
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
@@ -79,6 +80,8 @@ class Packet:
         magic, ver, msg_type, flags, _, seq, length, checksum = struct.unpack(HEADER_FORMAT, header_bytes)
         if magic != MAGIC or ver != PROTOCOL_VERSION:
             raise ValueError(f"Invalid magic (0x{magic:04X}) or version ({ver})")
+        if length > MAX_PACKET_PAYLOAD:
+            raise ValueError(f"Payload length exceeds maximum allowed limit ({length} > {MAX_PACKET_PAYLOAD})")
         return {
             "magic": magic, "version": ver, "msg_type": MsgType(msg_type),
             "flags": flags, "seq": seq, "length": length, "checksum": checksum

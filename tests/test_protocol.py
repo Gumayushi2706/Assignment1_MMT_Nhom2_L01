@@ -9,8 +9,8 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from protocol.packet import Packet, MsgType, PacketFlags
-from protocol.crypto import default_crypto, CryptoManager
-from protocol.udp_stream import UDPPacket, TYPE_DATA, TYPE_ACK
+from protocol.crypto import default_crypto
+from protocol.udp_stream import UDPPacket, TYPE_DATA
 
 
 class TestProtocol(unittest.TestCase):
@@ -59,6 +59,21 @@ class TestProtocol(unittest.TestCase):
         self.assertEqual(decoded.chunk_idx, 3)
         self.assertEqual(decoded.total_chunks, 10)
         self.assertEqual(decoded.payload, data)
+
+    def test_packet_boundary_and_tampering(self):
+        """Test detection of corrupted CRC, invalid magic, and oversized payload."""
+        pkt = Packet(MsgType.HANDSHAKE_REQ, payload=b"HELLO")
+        raw = bytearray(pkt.encode())
+
+        # Tamper payload -> CRC32 mismatch
+        raw[-1] ^= 0xFF
+        with self.assertRaises(ValueError):
+            Packet.from_bytes(bytes(raw))
+
+        # Tamper magic bytes
+        raw[0] = 0x00
+        with self.assertRaises(ValueError):
+            Packet.from_bytes(bytes(raw))
 
 
 if __name__ == '__main__':

@@ -1,5 +1,5 @@
 """
-NexusStream - User State & Session Manager.
+CO3093 - User State & Session Manager.
 Maintains thread-safe user records, active socket references, and heartbeat timestamps.
 """
 
@@ -73,10 +73,8 @@ class UserManager:
                 user.last_heartbeat = time.time()
 
     def cleanup_inactive_users(self, timeout_sec=15.0):
-        """Remove users who have not sent a heartbeat within the timeout period."""
+        """Remove users who have not sent a heartbeat within timeout period; returns removed sessions."""
         now = time.time()
         with self._lock:
             stale_names = [name for name, s in self._users.items() if now - s.last_heartbeat > timeout_sec]
-            for name in stale_names:
-                del self._users[name]
-            return stale_names
+            return [self._users.pop(name) for name in stale_names if name in self._users]

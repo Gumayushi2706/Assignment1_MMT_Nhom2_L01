@@ -3,11 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>CO3093 Collaboration Client - Distributed Streaming System</title>
+  <title>Assignment 1 - Distributed Streaming Collaboration System</title>
   <link rel="icon" type="image/png" href="logo.png">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -19,7 +16,7 @@
           <img src="logo.png" alt="BK TP.HCM Logo" class="brand-logo-img">
         </div>
         <div class="brand-text">
-          <h1>NexusStream</h1>
+          <h1>Assignment 1</h1>
         </div>
       </div>
 
@@ -47,7 +44,6 @@
       <aside class="sidebar">
         <div class="sidebar-header">
           <h2>Active Peers (<span id="user-count">0</span>)</h2>
-          <button class="btn-icon" title="Refresh Peers" onclick="fetchState()">⟳</button>
         </div>
 
         <div class="channel-list">
@@ -70,17 +66,12 @@
         <div class="chat-header">
           <div class="chat-target-info">
             <span class="chat-icon" id="chat-header-icon">🌐</span>
-            <div>
-              <h2 id="chat-target-name">Global Chat</h2>
-            </div>
-          </div>
-          <div class="security-badge">
-            <span class="lock-icon">🔒</span> AES-256-GCM
+            <h2 id="chat-target-name">Global Chat</h2>
           </div>
         </div>
 
         <div class="messages-viewport" id="messages-viewport">
-          <div class="message-notice">Welcome to NexusStream! Connect to start.</div>
+          <div class="message-notice">Welcome! Connect to start chatting.</div>
         </div>
 
         <div class="chat-composer">
@@ -106,10 +97,13 @@
             </select>
           </div>
 
-          <div class="file-picker-dropzone" onclick="document.getElementById('file-input').click()">
-            <input type="file" id="file-input" style="display: none;" onchange="handleFileSelected(event)">
-            <span class="drop-icon">📁</span>
-            <p id="file-picker-label">Click to select a file</p>
+          <div class="form-group">
+            <label>Select File</label>
+            <div id="file-picker-box" class="file-picker-box" onclick="document.getElementById('file-input').click()">
+              <input type="file" id="file-input" style="display:none" onchange="handleFileSelected(event)">
+              <span class="file-picker-icon">📁</span>
+              <span id="file-picker-label">Click to select file</span>
+            </div>
           </div>
 
           <button id="btn-send-file" class="btn btn-success full-width" onclick="uploadAndSendFile()" disabled>
@@ -128,10 +122,10 @@
     </main>
   </div>
 
-  <!-- Connection Modal -->
+  <!-- Connection Modal (Configurable Server IP & Port) -->
   <div id="modal-connect" class="modal-backdrop hidden">
     <div class="modal-card">
-      <h2>Log In</h2>
+      <h2>Connect to Server</h2>
 
       <div class="form-group">
         <label for="input-username">Username</label>
@@ -151,7 +145,7 @@
 
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick="toggleConnectModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="connectToServer()">Log In</button>
+        <button class="btn btn-primary" onclick="connectToServer()">Connect</button>
       </div>
     </div>
   </div>
