@@ -30,6 +30,8 @@ class CollaborationServer:
         self.tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
         self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        if hasattr(socket, 'SO_REUSEADDR'):
+            self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
         self.user_manager = UserManager()
         self.running = False
@@ -119,8 +121,9 @@ class CollaborationServer:
                     packet = recv_packet(sock)
                 except (socket.timeout, ConnectionResetError, BrokenPipeError, EOFError, OSError):
                     break
-                except ValueError:
-                    continue
+                except ValueError as e:
+                    logger.warning(f"Framing corruption from {addr}: {e}. Terminating client connection.")
+                    break
 
                 msg_type = packet.msg_type
 
@@ -144,9 +147,9 @@ class CollaborationServer:
                         send_packet(sock, Packet.json_payload(MsgType.AUTH_FAILURE, {"reason": "Username already taken"}))
                     else:
                         current_user = username
+                        session.authenticated = True
                         self._log(f"[+] '{username}' joined")
                         send_packet(sock, Packet.json_payload(MsgType.AUTH_SUCCESS, {"username": username, "users": self.user_manager.get_all_users()}))
-                        session.authenticated = True
                         self._broadcast_packet(Packet.json_payload(MsgType.USER_JOINED, {"username": username, "ip": addr[0], "udp_port": udp_port}), exclude_user=username)
 
                 # 3. Broadcast Messaging (Step 5 & 8 - Zero-Knowledge E2EE Relay)

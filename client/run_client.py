@@ -41,9 +41,9 @@ def main():
     if username:
         ok, msg = client.connect_and_login(username, host=args.host, port=args.port)
         status = f"Logged in as '{username}'" if ok else f"Login failed: {msg}"
-        print(f"[+] {status} | Web UI: {url}")
+        print(f"[+] {status} | Web UI: {url}", flush=True)
     else:
-        print(f"[+] Client running | Web UI: {url}")
+        print(f"[+] Client running | Web UI: {url}", flush=True)
 
     if not args.no_browser:
         try:

@@ -29,11 +29,11 @@ Hệ thống cộng tác thời gian thực phân tán **NexusStream** được 
 | **Step 3: Auth & State Management** | Đăng nhập tên duy nhất, quản lý phiên, lưu IP/Port. | [`server/user_manager.py`](server/user_manager.py): Lưu `UserSession` an toàn đa luồng (`RLock`), broadcast `USER_JOINED`. | 1 đ |
 | **Step 4: Concurrency Implementation** | Đa luồng (Multi-threading), hỗ trợ 10–20 clients. | Mô hình Thread-per-Client, kiểm thử thành công 15 clients đồng thời trong [`tests/test_integration.py`](tests/test_integration.py). | 1 đ |
 | **Step 5: Time-sensitive Streaming** | Định tuyến chat chung (Broadcast) và riêng (Unicast). | Gói tin `MSG_BROADCAST`, `MSG_UNICAST`, kèm gói xác nhận `MSG_DELIVERY_ACK`. | 1 đ |
-| **Step 6: Reliable File Transfer** | Truyền file UDP tin cậy, cắt chunk, đối soát toàn vẹn. | [`protocol/udp_stream.py`](protocol/udp_stream.py): Selective Repeat ARQ, cửa sổ trượt $N=8$, chunk 1200B, mã hash SHA-256. | 1 đ |
-| **Step 7: Resilience & Error Handling** | Chịu lỗi sập nguồn, timeout socket, không crash server. | Bắt lỗi `ConnectionResetError`, `BrokenPipeError`; Watchdog quét định kỳ 5s đá user im lặng > 15s. | 1 đ |
+| **Step 6: Reliable File Transfer** | Truyền file UDP tin cậy, cắt chunk, đối soát toàn vẹn. | [`protocol/udp_stream.py`](protocol/udp_stream.py): Selective Repeat ARQ, cửa sổ trượt $N=8$, chunk 1200B ($< \text{MTU } 1500\text{B}$), đối soát mã hash SHA-256. | 1 đ |
+| **Step 7: Resilience & Error Handling** | Chịu lỗi sập nguồn, timeout socket, không crash server. | Bắt lỗi `ConnectionResetError`, `BrokenPipeError`, ngắt `break` an toàn khi hỏng framing; Watchdog quét định kỳ 5s loại bỏ session chết. | 1 đ |
 | **Step 8: Security Layer** | Mã hóa dữ liệu E2EE trước khi gửi và giải mã khi nhận. | [`protocol/crypto.py`](protocol/crypto.py): Thuật toán chuẩn **AES-256-GCM** (khóa 32B, IV 12B), chống Replay Attack. | 1 đ |
-| **Step 9: HTTP-based UI with Client JS** | Giao diện Web hiển thị chat, tiến trình tải, danh bạ online. | [`client/web_server.py`](client/web_server.py): Server HTTP/1.1 socket thuần phục vụ giao diện Web Dashboard, không dùng framework. | 1 đ |
-| **Step 10: Testing & Code Quality** | Kiểm thử tự động hóa toàn diện, code sạch sẽ. | 14 bài test tự động hóa toàn diện (`tests/`): kiểm tra giao thức nhị phân, UDP streaming, REST API và kiểm thử tích hợp 15 clients. | 1 đ |
+| **Step 9: HTTP-based UI with Client JS** | Giao diện Web hiển thị chat, tiến trình tải, danh bạ online. | [`client/web_server.py`](client/web_server.py): Server HTTP/1.1 socket thuần phục vụ giao diện Web Dashboard, không dùng framework; tích hợp Notification System CO3094. | 1 đ |
+| **Step 10: Testing & Code Quality** | Kiểm thử tự động hóa toàn diện, code sạch sẽ. | 15 bài test tự động hóa toàn diện (`tests/`): kiểm tra giao thức nhị phân, UDP streaming, REST API và kiểm thử tích hợp 15 clients. | 1 đ |
 
 ---
 
@@ -41,13 +41,16 @@ Hệ thống cộng tác thời gian thực phân tán **NexusStream** được 
 
 Bên cạnh 10 tiêu chí Rubric của Assignment 1, hệ thống hiện thực đầy đủ các đặc tả trong tài liệu `CO3094_assignment_streaprous.pdf` (Mục 2.2, 2.3 & 2.4):
 - **Giai đoạn Đăng ký & Định danh (Client-Server Tracker - Trang 7):** Quản lý trạng thái phiên đa luồng với `client_ip`, `client_port`, `udp_port`, `state`, `last_activity`.
+- **Cơ chế Xác thực Kép (Mục 2.2 - Trang 8):** Hỗ trợ cả HTTP Basic Authentication (RFC 2617 / RFC 7235) và HTTP Cookie (RFC 6265 qua header `Set-Cookie`).
+- **Hệ thống Kênh & Thông báo (Mục 2.3 - Trang 10):** Quản lý kênh Global Chat và Direct Messages, tin nhắn bất biến không xóa/sửa, hệ thống thông báo hiển thị tổng số tin nhắn chưa đọc trên tab trình duyệt (ví dụ: `(3) Assignment 1...`) và huy hiệu đỏ Unread Badge hiển thị số tin chưa đọc riêng theo từng người/kênh.
 - **Hỗ trợ danh mục RESTful APIs theo Mục 2.4 (Trang 11):**
-  - `/login` & `/submit-info`: Xác thực đăng nhập (hỗ trợ cơ chế Cookie RFC 6265 với header `Set-Cookie`).
+  - `/login` & `/submit-info`: Xác thực đăng ký/đăng nhập (hỗ trợ cả Cookie RFC 6265 và Basic Auth RFC 7235).
   - `/get-list` & `/add-list`: Truy vấn danh bạ các peer trực tuyến.
   - `/connect-peer`: Thiết lập kết nối giữa client và mạng lưới.
   - `/broadcast-peer`: Gửi tin nhắn Broadcast đến toàn bộ mạng lưới peer.
-  - `/send-peer`: Gửi tin nhắn Unicast trực tiếp đến một peer xác định.
+  - `/send-peer`: Gửi tin nhắn Unicast trực tiếp đến một peer xác định (kiểm tra chặt chẽ trường `target`).
   - `/send-file`: Truyền tệp nhị phân tin cậy qua UDP streaming với Selective Repeat ARQ.
+  - `/logout`: Đăng xuất và xóa phiên Cookie.
 - **Tiêu chuẩn mã nguồn (Mục 3.1):** Tuân thủ quy chuẩn định dạng PEP 8 và docstring chuẩn PEP 257.
 
 ---
@@ -155,10 +158,10 @@ assignment1/
 
 ## 6. Chạy Kiểm thử Tự động (Automated Test Suite)
 
-Dự án cung cấp bộ kiểm thử gồm **14 bài test tự động** kiểm chứng 100% các tiêu chí kỹ thuật:
+Dự án cung cấp bộ kiểm thử gồm **15 bài test tự động** kiểm chứng 100% các tiêu chí kỹ thuật:
 
 ```bash
-# Chạy toàn bộ 14 bài test cùng lúc (Khuyên dùng):
+# Chạy toàn bộ 15 bài test cùng lúc (Khuyên dùng):
 python -m unittest discover tests
 ```
 
@@ -167,18 +170,18 @@ Hoặc chạy độc lập từng bộ test:
 # 1. Kiểm thử đóng gói Header 20B, CRC32 và mã hóa AES-256-GCM (Step 1 & 8)
 python -m unittest tests/test_protocol.py
 
-# 2. Kiểm thử truyền file Selective Repeat ARQ và đối soát SHA-256 (Step 6)
+# 2. Kiểm thử truyền file Selective Repeat ARQ dưới 20% mất gói và đối soát SHA-256 (Step 6)
 python -m unittest tests/test_udp_stream.py
 
 # 3. Kiểm thử tải đồng thời 15 clients, chịu lỗi sập nguồn và REST API CO3094 (Step 2, 3, 4, 5, 7, 9)
-python tests/test_integration.py
+python -m unittest tests/test_integration.py
 ```
 
 **Kết quả kiểm thử:**
 ```text
-..............
+...............
 ----------------------------------------------------------------------
-Ran 14 tests in 5.624s
+Ran 15 tests in 6.452s
 
 OK
 ```

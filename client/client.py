@@ -111,6 +111,8 @@ class CollaborationClient:
             return
         self.running = False
         self.is_connected = False
+        old_uname = self.username
+        self.username = ""
         with self.lock:
             for sender in list(self.active_senders.values()):
                 try: sender.cancel()
@@ -125,7 +127,7 @@ class CollaborationClient:
                 self.udp_sock.close()
         except Exception:
             pass
-        logger.debug(f"Client '{self.username}' disconnected cleanly.")
+        logger.debug(f"Client '{old_uname}' disconnected cleanly.")
 
     def _send_chat(self, target, text, is_broadcast):
         """Unified helper to send encrypted broadcast or unicast chat message."""
@@ -226,6 +228,11 @@ class CollaborationClient:
                 self.is_connected = False
                 self.running = False
                 break
+            except ValueError as e:
+                logger.warning(f"TCP framing corruption: {e}. Closing connection.")
+                self.is_connected = False
+                self.running = False
+                break
             except Exception:
                 continue
 
@@ -234,8 +241,8 @@ class CollaborationClient:
             if msg_type == MsgType.USER_JOINED:
                 data = pkt.to_json()
                 with self.lock:
-                    if not any(u.get("username") == data.get("username") for u in self.active_users):
-                        self.active_users.append(data)
+                    self.active_users = [u for u in self.active_users if u.get("username") != data.get("username")]
+                    self.active_users.append(data)
 
             elif msg_type == MsgType.USER_LEFT:
                 uname = pkt.to_json().get("username")

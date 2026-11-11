@@ -161,7 +161,10 @@ class StreamReceiver:
         with self.lock:
             if chunk_idx in self.received_chunks:
                 return False
-            data = default_crypto.decrypt(payload) if is_encrypted else payload
+            try:
+                data = default_crypto.decrypt(payload) if is_encrypted else payload
+            except Exception:
+                return False
             self.received_chunks[chunk_idx] = data
 
             if self.on_progress:

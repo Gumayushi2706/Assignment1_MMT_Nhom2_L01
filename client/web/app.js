@@ -1,13 +1,47 @@
-// Client-side UI Controller for Assignment 1
+// Client-side UI Controller for Assignment 1 & CO3094
 let currentChannel = "ALL";
 let isConnected = false;
 let selectedFile = null;
+let lastSeenMsgCount = 0;
+const unreadCounts = {};
 
 // Periodic polling every 1 second
 document.addEventListener("DOMContentLoaded", () => {
   fetchState();
   setInterval(fetchState, 1000);
 });
+
+window.onfocus = () => {
+  delete unreadCounts[currentChannel];
+  refreshTabTitle();
+  fetchState();
+};
+
+function refreshTabTitle() {
+  const total = Object.values(unreadCounts).reduce((a, b) => a + b, 0);
+  if (total > 0) {
+    document.title = `(${total}) Assignment 1 - Distributed Streaming Collaboration System`;
+  } else {
+    document.title = "Assignment 1 - Distributed Streaming Collaboration System";
+  }
+}
+
+function updateNotifications(messages, myUsername) {
+  if (!messages || !Array.isArray(messages)) return;
+  if (messages.length > lastSeenMsgCount && lastSeenMsgCount > 0) {
+    const newMsgs = messages.slice(lastSeenMsgCount);
+    newMsgs.forEach(m => {
+      if (!m.is_mine && myUsername && m.sender !== myUsername) {
+        const ch = m.is_broadcast ? "ALL" : m.sender;
+        if (ch !== currentChannel) {
+          unreadCounts[ch] = (unreadCounts[ch] || 0) + 1;
+        }
+      }
+    });
+    refreshTabTitle();
+  }
+  lastSeenMsgCount = messages.length;
+}
 
 // Toggle Connection Modal
 function toggleConnectModal() {
@@ -48,6 +82,9 @@ async function connectToServer() {
 async function disconnectFromServer() {
   try {
     await fetch("/api/disconnect", { method: "POST" });
+    for (const k in unreadCounts) delete unreadCounts[k];
+    lastSeenMsgCount = 0;
+    refreshTabTitle();
     fetchState();
   } catch (err) {
     console.error(err);
@@ -61,6 +98,7 @@ async function fetchState() {
     const s = await res.json();
 
     isConnected = s.is_connected;
+    updateNotifications(s.messages, s.username);
     updateHeader(s);
     updatePeers(s.active_users, s.username);
     renderMessages(s.messages, s.username);
@@ -101,22 +139,38 @@ function updateHeader(s) {
 function updatePeers(peers, myUsername) {
   const container = document.getElementById("peers-container");
   const select = document.getElementById("file-target-select");
+  const unreadGlobal = document.getElementById("unread-global");
   const others = (peers || []).filter(p => p.username !== myUsername);
 
   document.getElementById("user-count").textContent = (peers || []).length;
 
+  if (unreadGlobal) {
+    const gCount = unreadCounts["ALL"] || 0;
+    if (gCount > 0) {
+      unreadGlobal.textContent = gCount > 99 ? "99+" : gCount;
+      unreadGlobal.classList.remove("hidden");
+    } else {
+      unreadGlobal.classList.add("hidden");
+    }
+  }
+
   if (others.length === 0) {
     container.innerHTML = '<div class="empty-hint">No other peers online</div>';
   } else {
-    container.innerHTML = others.map(p => `
-      <div class="peer-item ${currentChannel === p.username ? 'active' : ''}" onclick="selectChannel('${escapeHtml(p.username)}')">
-        <span class="avatar">${escapeHtml(p.username[0].toUpperCase())}</span>
-        <div class="peer-meta">
-          <span class="peer-name">${escapeHtml(p.username)}</span>
-          <span class="peer-status">${p.ip}:${p.udp_port}</span>
+    container.innerHTML = others.map(p => {
+      const pCount = unreadCounts[p.username] || 0;
+      const badge = pCount > 0 ? `<span class="unread-badge">${pCount > 99 ? '99+' : pCount}</span>` : '';
+      return `
+        <div class="peer-item ${currentChannel === p.username ? 'active' : ''}" onclick="selectChannel('${escapeHtml(p.username)}')">
+          <span class="avatar">${escapeHtml(p.username[0].toUpperCase())}</span>
+          <div class="peer-meta">
+            <span class="peer-name">${escapeHtml(p.username)}</span>
+            <span class="peer-status">${p.ip}:${p.udp_port}</span>
+          </div>
+          ${badge}
         </div>
-      </div>
-    `).join("");
+      `;
+    }).join("");
   }
 
   const currentVal = select.value;
@@ -128,6 +182,8 @@ function updatePeers(peers, myUsername) {
 // Switch between Global Chat and Direct Peer Chat
 function selectChannel(ch) {
   currentChannel = ch;
+  delete unreadCounts[ch];
+  refreshTabTitle();
   document.getElementById("channel-global").className = "channel-item" + (ch === "ALL" ? " active" : "");
   document.getElementById("chat-header-icon").textContent = ch === "ALL" ? "🌐" : "💬";
   document.getElementById("chat-target-name").textContent = ch === "ALL" ? "Global Chat" : "@" + ch;
