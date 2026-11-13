@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" width="110" alt="HCMUT Logo" />
+  <img src="client/web/logo.png" width="110" alt="HCMUT Logo" />
 </p>
 
 # Assignment 1: Distributed Streaming-based Collaboration Application
@@ -95,7 +95,7 @@ python -m unittest discover tests -v
 
 ```text
 assignment1/
-├── docs/                      # Tài liệu thuyết minh đồ án (Report PDF, Slide PDF)
+├── Report_BTL1.pdf            # Báo cáo kỹ thuật thuyết minh đồ án (Technical Report PDF)
 ├── protocol/                  # Tầng giao thức & Thuật toán truyền thông
 │   ├── packet.py              # Đóng khung TCP nhị phân 20B, MsgType, CRC32
 │   ├── crypto.py              # Mã hóa AES-256-GCM, băm mật khẩu scrypt + salt
@@ -109,7 +109,7 @@ assignment1/
 │   ├── web_server.py          # Server HTTP/1.1 socket thuần (Zero-Framework Web UI)
 │   ├── run_client.py          # Module thực thi Client
 │   ├── downloads/             # Thư mục lưu tệp nhận qua P2P UDP
-│   └── web/                   # Giao diện Web (index.html, style.css, app.js)
+│   └── web/                   # Giao diện Web (index.html, style.css, app.js, logo.png)
 ├── tests/                     # Bộ kiểm thử tự động (18 unit tests)
 ├── requirements.txt           # Danh mục thư viện phụ thuộc
 ├── .gitignore                 # Cấu hình bỏ qua tệp tạm, cache và tệp tải về

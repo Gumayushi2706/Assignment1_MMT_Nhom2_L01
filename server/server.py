@@ -119,10 +119,11 @@ class CollaborationServer:
 
                 uname = data.get("username")
                 token = data.get("token")
-                session = self.user_manager.get_user(uname)
-                if session and session.token and session.token == token:
+                if self.user_manager.verify_token(uname, token):
                     self.user_manager.update_heartbeat(uname)
-                    session.ip = addr[0]
+                    session = self.user_manager.get_user(uname)
+                    if session:
+                        session.ip = addr[0]
                     reply_dict = {"status": "OK", "username": uname, "users": self.user_manager.get_all_users()}
                 else:
                     reply_dict = {"status": "REJECTED", "reason": "Invalid token"}

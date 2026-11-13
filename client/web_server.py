@@ -5,6 +5,7 @@ Built purely using standard low-level TCP sockets (no Flask, Django, or WebSocke
 
 import socket
 import threading
+import time
 import json
 import os
 import urllib.parse
@@ -144,7 +145,7 @@ class RawSocketHTTPServer:
         normalized_path = path.rstrip("/")
 
         # State API (polling)
-        if normalized_path in ("/api/state", "/state", "/get-list"):
+        if normalized_path in ("/api/state", "/state", "/get-list", "/add-list"):
             with self.client.lock:
                 is_conn = self.client.is_connected
                 state = {
@@ -189,7 +190,7 @@ class RawSocketHTTPServer:
             ep = path.rstrip("/")
 
             # Login or Register with password (scrypt + salt)
-            if ep in ("/api/connect", "/login", "/register", "/api/register"):
+            if ep in ("/api/connect", "/login", "/register", "/api/register", "/submit-info", "/connect-peer"):
                 uname = (data.get("username") or data.get("user") or "").strip()
                 pwd = data.get("password", "")
                 host = data.get("host") or data.get("server_ip") or "127.0.0.1"
@@ -205,7 +206,6 @@ class RawSocketHTTPServer:
                         self._send_json(conn, {"success": True, "message": "Already connected", "username": uname})
                         return
                     self.client.disconnect()
-                    import time
                     time.sleep(0.1)
 
                 ok, msg = self.client.connect_and_login(uname, password=pwd, host=host, port=port, is_register=is_register)
@@ -220,7 +220,7 @@ class RawSocketHTTPServer:
                 self._send_json(conn, {"success": True, "message": "Disconnected"}, extra_headers=extra)
 
             # Send message
-            elif ep in ("/api/send_message", "/send", "/broadcast-peer"):
+            elif ep in ("/api/send_message", "/send", "/broadcast-peer", "/send-peer"):
                 is_broadcast = (ep == "/broadcast-peer") or data.get("target") == "ALL"
                 target = "ALL" if is_broadcast else data.get("target", "ALL")
                 text = (data.get("text") or data.get("message") or "").strip()

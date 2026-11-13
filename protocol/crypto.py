@@ -6,6 +6,7 @@ Complies with Rubric Step 3 (Password Auth) and Step 8 (Payload Encryption).
 import os
 import base64
 import hashlib
+import hmac
 import secrets
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -69,6 +70,6 @@ def hash_password(password: str, salt: str = None) -> tuple[str, str]:
 
 
 def verify_password(password: str, salt: str, expected_hash: str) -> bool:
-    """Verify password against stored salt and expected hash using scrypt."""
+    """Verify password against stored salt and expected hash using scrypt (RFC 7914 + Timing Attack protection)."""
     _, hashed = hash_password(password, salt=salt)
-    return hashed == expected_hash
+    return hmac.compare_digest(hashed, expected_hash)
