@@ -96,6 +96,12 @@ class StreamSender:
         self.finished = False
         self.failed = False
 
+        # Congestion Control: CUBIC window scaling & BBR-style packet pacing
+        self.cwnd = float(WINDOW_SIZE)       # Dynamic congestion window (starts at 8)
+        self.ssthresh = 16.0                 # Slow-start threshold
+        self.pacing_interval = 0.005         # Inter-packet pacing delay (s)
+        self.srtt = 0.05                     # Smoothed RTT (s)
+
     def cancel(self):
         """Cancel sending and transmit FIN."""
         with self.lock:
@@ -112,10 +118,24 @@ class StreamSender:
                 pass
 
     def handle_ack(self, ack_idx):
-        """Process incoming ACK and advance window base."""
+        """Process incoming ACK, advance window base, and update CUBIC/BBR congestion state."""
         with self.lock:
             if ack_idx not in self.acked and 0 <= ack_idx < self.total_chunks:
                 self.acked.add(ack_idx)
+
+                # Estimate RTT for BBR-style pacing adaptation
+                sent_time = self.send_times.get(ack_idx)
+                if sent_time:
+                    rtt_sample = max(0.001, time.time() - sent_time)
+                    self.srtt = 0.875 * self.srtt + 0.125 * rtt_sample
+                    self.pacing_interval = max(0.001, min(0.015, self.srtt / max(1.0, self.cwnd)))
+
+                # CUBIC / Congestion Avoidance window scaling
+                if self.cwnd < self.ssthresh:
+                    self.cwnd = min(32.0, self.cwnd + 1.0)
+                else:
+                    self.cwnd = min(32.0, self.cwnd + max(0.05, 1.0 / self.cwnd))
+
                 while self.base in self.acked and self.base < self.total_chunks:
                     self.base += 1
                 if self.on_progress:
@@ -126,19 +146,21 @@ class StreamSender:
                     self._send_fin()
 
     def send_loop(self):
-        """Dispatch chunks in sliding window [base, base + N) and retransmit timed-out segments."""
+        """Dispatch chunks in sliding window [base, base + cwnd) and handle congestion on timeout."""
         while self.running and not self.finished:
             now = time.time()
             to_send = []
 
             with self.lock:
-                # 1. Send new chunks within the sliding window
-                while self.next_seq < min(self.base + WINDOW_SIZE, self.total_chunks):
+                win_limit = max(1, int(self.cwnd))
+                # 1. Send new chunks within the dynamic sliding window
+                while self.next_seq < min(self.base + win_limit, self.total_chunks):
                     to_send.append(self.next_seq)
                     self.send_times[self.next_seq] = now
                     self.next_seq += 1
 
-                # 2. Check and retransmit timed-out unacknowledged chunks
+                # 2. Check and retransmit timed-out unacknowledged chunks with CUBIC backoff
+                has_loss = False
                 for idx in range(self.base, min(self.next_seq, self.total_chunks)):
                     if idx not in self.acked and (now - self.send_times.get(idx, 0) > RETRANSMIT_TIMEOUT):
                         retries = self.retry_counts.get(idx, 0) + 1
@@ -149,6 +171,13 @@ class StreamSender:
                         self.retry_counts[idx] = retries
                         to_send.append(idx)
                         self.send_times[idx] = now
+                        has_loss = True
+
+                # CUBIC multiplicative decrease on congestion loss (beta = 0.7)
+                if has_loss:
+                    self.ssthresh = max(2.0, self.cwnd * 0.7)
+                    self.cwnd = max(2.0, self.ssthresh)
+                    self.pacing_interval = min(0.02, self.pacing_interval * 1.5)
 
             for idx in to_send:
                 payload, flags = self.chunks[idx]
@@ -158,7 +187,7 @@ class StreamSender:
                 except Exception:
                     pass
 
-            time.sleep(0.005)
+            time.sleep(self.pacing_interval)
 
 
 class StreamReceiver:

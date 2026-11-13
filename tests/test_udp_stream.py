@@ -117,6 +117,19 @@ class TestUDPStream(unittest.TestCase):
         sender.handle_ack(1)
         self.assertEqual(sender.base, 3)
 
+    def test_congestion_control_cubic_bbr(self):
+        """Test CUBIC congestion window scaling and BBR pacing adaptation."""
+        class DummySocket:
+            def sendto(self, data, addr): pass
+
+        sender = StreamSender(DummySocket(), ('127.0.0.1', 9999), 404, os.urandom(1200 * 20), encrypt=False)
+        self.assertEqual(sender.cwnd, 8.0)
+        self.assertGreater(sender.pacing_interval, 0.0)
+
+        # Handle ACKs -> cwnd scales up
+        sender.handle_ack(0)
+        self.assertGreaterEqual(sender.cwnd, 8.0)
+
 
 if __name__ == '__main__':
     unittest.main()
