@@ -1,6 +1,6 @@
 """
-CO3093 - Reliable UDP Streaming Protocol.
-Selective Repeat ARQ with sliding window flow control (N=8) and chunk sizes bounded below MTU (1200 bytes).
+CO3093 - Reliable UDP Streaming Protocol (Selective Repeat ARQ).
+Sliding window flow control (N=8) and chunk sizes bounded below MTU (1200 bytes).
 Fixed 24-byte Header: Magic (2B) | Type (1B) | Flags (1B) | StreamID (4B) | ChunkIdx (4B) | TotalChunks (4B) | Len (2B) | Reserved (2B) | CRC32 (4B)
 """
 
@@ -14,14 +14,16 @@ UDP_MAGIC = 0x5546           # 'UF' (UDP Framing)
 CHUNK_PAYLOAD_SIZE = 1200   # Bounded below 1500-byte Ethernet MTU to prevent IP fragmentation
 WINDOW_SIZE = 8             # Sliding window size N
 RETRANSMIT_TIMEOUT = 0.25   # Retransmission timeout (250ms)
-MAX_CHUNK_RETRANSMITS = 30  # Max consecutive retransmission attempts before failing
+MAX_RETRIES = 30            # Maximum retries before declaring failure
 
 UDP_HEADER_FORMAT = "!HBBIIIH2sI"
 UDP_HEADER_SIZE = struct.calcsize(UDP_HEADER_FORMAT)
 assert UDP_HEADER_SIZE == 24
 
-TYPE_DATA = 1   # Chunk payload segment
-TYPE_ACK = 2    # Selective acknowledgment segment
+TYPE_DATA = 1        # Chunk payload segment
+TYPE_ACK = 2         # Selective acknowledgment segment
+TYPE_FIN = 3         # End-of-stream teardown segment
+TYPE_HEARTBEAT = 4   # Heartbeat / Peer Discovery with token authentication
 
 FLAG_NONE = 0x00
 FLAG_ENCRYPTED = 0x01
@@ -66,19 +68,20 @@ class UDPPacket:
 
 
 class StreamSender:
-    """Sends binary data reliably over UDP using Selective Repeat ARQ."""
-    def __init__(self, sock, target_addr, stream_id, raw_data, encrypt=True, on_progress=None):
+    """Sends binary data reliably over UDP using Selective Repeat ARQ (Window N=8)."""
+    def __init__(self, sock, target_addr, stream_id, raw_data, encrypt=True, on_progress=None, crypto=None):
         self.sock = sock
         self.target_addr = target_addr
         self.stream_id = stream_id
         self.on_progress = on_progress
+        self.crypto = crypto if crypto else default_crypto
 
         # Chunk and optionally encrypt payloads
         self.chunks = []
         for i in range(0, max(1, len(raw_data)), CHUNK_PAYLOAD_SIZE):
             part = raw_data[i:i + CHUNK_PAYLOAD_SIZE]
             if encrypt:
-                self.chunks.append((default_crypto.encrypt(part), FLAG_ENCRYPTED))
+                self.chunks.append((self.crypto.encrypt(part), FLAG_ENCRYPTED))
             else:
                 self.chunks.append((part, FLAG_NONE))
         self.total_chunks = len(self.chunks)
@@ -87,19 +90,29 @@ class StreamSender:
         self.next_seq = 0
         self.acked = set()
         self.send_times = {}
-        self.retransmit_counts = {}
+        self.retry_counts = {}
         self.lock = threading.RLock()
         self.running = True
         self.finished = False
         self.failed = False
 
     def cancel(self):
-        """Immediately abort sending loop."""
+        """Cancel sending and transmit FIN."""
         with self.lock:
             self.running = False
+            self._send_fin(payload=b"CANCEL")
+
+    def _send_fin(self, payload=b""):
+        """Transmit FIN segment to indicate stream completion."""
+        fin_pkt = UDPPacket(TYPE_FIN, self.stream_id, 0, self.total_chunks, payload=payload)
+        for _ in range(2):
+            try:
+                self.sock.sendto(fin_pkt.encode(), self.target_addr)
+            except Exception:
+                pass
 
     def handle_ack(self, ack_idx):
-        """Process incoming ACK and advance sliding window base."""
+        """Process incoming ACK and advance window base."""
         with self.lock:
             if ack_idx not in self.acked and 0 <= ack_idx < self.total_chunks:
                 self.acked.add(ack_idx)
@@ -110,29 +123,30 @@ class StreamSender:
                     self.on_progress(len(self.acked), self.total_chunks, pct)
                 if len(self.acked) >= self.total_chunks:
                     self.finished = True
+                    self._send_fin()
 
     def send_loop(self):
-        """Dispatch chunks within window and retransmit timed-out segments."""
+        """Dispatch chunks in sliding window [base, base + N) and retransmit timed-out segments."""
         while self.running and not self.finished:
             now = time.time()
             to_send = []
 
             with self.lock:
-                # Dispatch new chunks in sliding window [base, base + WINDOW_SIZE)
+                # 1. Send new chunks within the sliding window
                 while self.next_seq < min(self.base + WINDOW_SIZE, self.total_chunks):
                     to_send.append(self.next_seq)
                     self.send_times[self.next_seq] = now
                     self.next_seq += 1
 
-                # Retransmit unacknowledged chunks exceeding timeout
+                # 2. Check and retransmit timed-out unacknowledged chunks
                 for idx in range(self.base, min(self.next_seq, self.total_chunks)):
                     if idx not in self.acked and (now - self.send_times.get(idx, 0) > RETRANSMIT_TIMEOUT):
-                        retries = self.retransmit_counts.get(idx, 0) + 1
-                        if retries > MAX_CHUNK_RETRANSMITS:
+                        retries = self.retry_counts.get(idx, 0) + 1
+                        if retries > MAX_RETRIES:
                             self.failed = True
                             self.running = False
                             break
-                        self.retransmit_counts[idx] = retries
+                        self.retry_counts[idx] = retries
                         to_send.append(idx)
                         self.send_times[idx] = now
 
@@ -149,20 +163,31 @@ class StreamSender:
 
 class StreamReceiver:
     """Receives, decrypts, and reassembles out-of-order UDP chunks."""
-    def __init__(self, stream_id, total_chunks, on_progress=None):
+    def __init__(self, stream_id, total_chunks, on_progress=None, crypto=None):
         self.stream_id = stream_id
         self.total_chunks = total_chunks
         self.received_chunks = {}
         self.on_progress = on_progress
+        self.crypto = crypto if crypto else default_crypto
         self.lock = threading.RLock()
+        self.fin_received = False
+        self.cancelled = False
+        self.finalized = False
+
+    def handle_fin(self, payload=b""):
+        """Handle incoming FIN packet."""
+        with self.lock:
+            self.fin_received = True
+            if payload == b"CANCEL":
+                self.cancelled = True
 
     def put_chunk(self, chunk_idx, payload, is_encrypted):
-        """Store chunk, decrypt if encrypted, and update progress."""
+        """Store chunk, decrypt if needed, and update progress."""
         with self.lock:
             if chunk_idx in self.received_chunks:
                 return False
             try:
-                data = default_crypto.decrypt(payload) if is_encrypted else payload
+                data = self.crypto.decrypt(payload) if is_encrypted else payload
             except Exception:
                 return False
             self.received_chunks[chunk_idx] = data

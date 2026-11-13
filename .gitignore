@@ -2,24 +2,31 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.pytest_cache/
 
-# Temporary / OS files
+# Temporary & Environment / OS files
 .DS_Store
 Thumbs.db
 *.tmp
 *.log
+.env
+venv/
+.venv/
 
-# IDE & Editors
+# IDEs & Editors
 .vscode/
 .idea/
+*.sublime-project
+*.sublime-workspace
 
 # Client downloaded files (preserve folder structure with .gitkeep)
 client/downloads/*
 !client/downloads/.gitkeep
 
-# Excluded reports & slides
-*.tex
-Slide_Assignment1.pdf
-Report_BTL1.pdf
-
-
+# LaTeX build artifacts (keep output PDFs in docs/)
+*.aux
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+*.toc
+*.out

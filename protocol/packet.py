@@ -25,6 +25,7 @@ class MsgType(enum.IntEnum):
     AUTH_SUCCESS = 4
     AUTH_FAILURE = 5
     DISCONNECT = 6
+    AUTH_REGISTER = 7
 
     # State Management & Heartbeat (Steps 3 & 7)
     USER_JOINED = 12
@@ -39,6 +40,7 @@ class MsgType(enum.IntEnum):
 
     # UDP File Transfer Signaling (Step 6)
     FILE_ANNOUNCE = 30
+    FILE_ANNOUNCE_ACK = 31
 
 
 class PacketFlags:

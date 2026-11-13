@@ -1,6 +1,6 @@
 """
 CO3093 - Client Core Networking Engine.
-Manages dual-plane connectivity: TCP for signaling/messaging and UDP for sliding-window file streaming.
+Manages dual-plane connectivity: TCP for signaling/chat and UDP for reliable sliding-window file streaming.
 """
 
 import socket
@@ -8,22 +8,25 @@ import threading
 import time
 import os
 import hashlib
+import json
 import logging
 
 from protocol.packet import Packet, MsgType, PacketFlags, send_packet, recv_packet
 from protocol.crypto import default_crypto
-from protocol.udp_stream import UDPPacket, StreamSender, StreamReceiver, TYPE_DATA, TYPE_ACK
+from protocol.udp_stream import UDPPacket, StreamSender, StreamReceiver, TYPE_DATA, TYPE_ACK, TYPE_FIN, TYPE_HEARTBEAT
 
 logger = logging.getLogger("ClientEngine")
 
 
 class CollaborationClient:
-    """Handles connection, authentication, messaging, and UDP file transfers for a client."""
+    """Handles connection, password authentication, messaging, and UDP file transfers."""
     def __init__(self, server_host="127.0.0.1", server_tcp_port=8888):
         self.server_host = server_host
         self.server_tcp_port = server_tcp_port
+        self.server_udp_port = 8889
 
         self.username = ""
+        self.auth_token = ""
         self.is_connected = False
         self.tcp_sock = None
         self.udp_sock = None
@@ -34,6 +37,7 @@ class CollaborationClient:
         self.transfers = {}
         self.active_receivers = {}
         self.active_senders = {}
+        self.stream_ready_events = {}
 
         self.running = False
         self.lock = threading.RLock()
@@ -48,13 +52,13 @@ class CollaborationClient:
             self.seq_counter += 1
             return self.seq_counter
 
-    def connect_and_login(self, username, host=None, port=None):
-        """Connect to central server, perform handshake, and authenticate."""
+    def connect_and_login(self, username, password="", host=None, port=None, is_register=False):
+        """Connect to server, handshake, and authenticate/register with password (Step 2 & 3)."""
         if host: self.server_host = host
         if port: self.server_tcp_port = port
 
         try:
-            # Initialize UDP socket for incoming file streams
+            # Bind UDP socket for incoming file streams & UDP heartbeats
             self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.udp_sock.bind(("0.0.0.0", 0))
             self.udp_port = self.udp_sock.getsockname()[1]
@@ -64,14 +68,26 @@ class CollaborationClient:
             self.tcp_sock.settimeout(5.0)
             self.tcp_sock.connect((self.server_host, self.server_tcp_port))
 
-            # Handshake (Step 2)
+            # Step 2: Handshake
             send_packet(self.tcp_sock, Packet(MsgType.HANDSHAKE_REQ, payload=b"CLIENT_HELLO"))
             ack = recv_packet(self.tcp_sock)
             if ack.msg_type != MsgType.HANDSHAKE_ACK:
                 return False, "Handshake failed"
 
-            # Login (Step 3)
-            auth_pkt = Packet.json_payload(MsgType.AUTH_LOGIN, {"username": username, "udp_port": self.udp_port})
+            try:
+                ack_data = ack.to_json()
+                self.server_udp_port = int(ack_data.get("udp_port", 8889))
+            except Exception:
+                pass
+
+            # Step 3: Login or Register with username and password (scrypt + salt)
+            msg_code = MsgType.AUTH_REGISTER if is_register else MsgType.AUTH_LOGIN
+            auth_pkt = Packet.json_payload(msg_code, {
+                "username": username,
+                "password": password,
+                "udp_port": self.udp_port,
+                "is_register": is_register
+            })
             send_packet(self.tcp_sock, auth_pkt)
 
             while True:
@@ -84,21 +100,22 @@ class CollaborationClient:
                     self.username = username
                     self.is_connected = True
                     self.running = True
-                    self.active_users = resp.to_json().get("users", [])
+                    resp_data = resp.to_json()
+                    self.auth_token = resp_data.get("token", "")
+                    self.active_users = resp_data.get("users", [])
 
                     self.tcp_sock.settimeout(None)
                     threading.Thread(target=self._tcp_listen_loop, name=f"TCP-{username}", daemon=True).start()
                     threading.Thread(target=self._udp_listen_loop, name=f"UDP-{username}", daemon=True).start()
                     threading.Thread(target=self._heartbeat_loop, name=f"Heartbeat-{username}", daemon=True).start()
 
-                    logger.debug(f"Client '{username}' authenticated successfully.")
                     return True, "Login successful"
                 elif resp.msg_type == MsgType.USER_JOINED:
                     continue
                 else:
                     return False, f"Unexpected response: {resp.msg_type.name}"
+
         except Exception as e:
-            logger.error(f"Error connecting to server: {e}")
             for s in (self.tcp_sock, self.udp_sock):
                 if s:
                     try: s.close()
@@ -111,14 +128,18 @@ class CollaborationClient:
             return
         self.running = False
         self.is_connected = False
-        old_uname = self.username
         self.username = ""
+        self.auth_token = ""
         with self.lock:
+            self.active_users.clear()
+            self.messages.clear()
+            self.transfers.clear()
             for sender in list(self.active_senders.values()):
                 try: sender.cancel()
                 except Exception: pass
             self.active_senders.clear()
             self.active_receivers.clear()
+            self.stream_ready_events.clear()
         try:
             if self.tcp_sock:
                 send_packet(self.tcp_sock, Packet(MsgType.DISCONNECT, payload=b"BYE"))
@@ -127,10 +148,9 @@ class CollaborationClient:
                 self.udp_sock.close()
         except Exception:
             pass
-        logger.debug(f"Client '{old_uname}' disconnected cleanly.")
 
     def _send_chat(self, target, text, is_broadcast):
-        """Unified helper to send encrypted broadcast or unicast chat message."""
+        """Send encrypted chat message with AES-256-GCM (Step 5 & 8)."""
         if not self.is_connected: return False
         enc = default_crypto.encrypt_string(text)
         mtype = MsgType.MSG_BROADCAST if is_broadcast else MsgType.MSG_UNICAST
@@ -144,16 +164,15 @@ class CollaborationClient:
                     "text": text, "timestamp": time.time(), "is_broadcast": is_broadcast, "is_mine": True
                 })
             return True
-        except Exception as e:
-            logger.warning(f"Error sending message: {e}")
+        except Exception:
             return False
 
     def send_broadcast_message(self, text):
-        """Send an encrypted broadcast message to global chat (Step 5 & 8)."""
+        """Send encrypted broadcast message to global chat (Step 5)."""
         return self._send_chat("ALL", text, True)
 
     def send_unicast_message(self, target_user, text):
-        """Send an encrypted direct message to a specific peer (Step 5 & 8)."""
+        """Send encrypted direct message to a specific peer (Step 5)."""
         return self._send_chat(target_user, text, False)
 
     def send_file(self, target_user, file_path=None, file_bytes=None, filename=None):
@@ -198,9 +217,14 @@ class CollaborationClient:
                     self.transfers[stream_id]["progress"] = round(pct, 1)
                     self.transfers[stream_id]["status"] = "Completed" if pct >= 100.0 else "Transferring..."
 
-        sender = StreamSender(self.udp_sock, (target_ip, target_udp_port), stream_id, file_data, encrypt=True, on_progress=on_prog)
+        sender = StreamSender(
+            self.udp_sock, (target_ip, target_udp_port), stream_id, file_data,
+            encrypt=True, on_progress=on_prog
+        )
+        ready_event = threading.Event()
         with self.lock:
             self.active_senders[stream_id] = sender
+            self.stream_ready_events[stream_id] = ready_event
 
         # Send signaling announcement over TCP
         announce = Packet.json_payload(
@@ -212,29 +236,24 @@ class CollaborationClient:
             }
         )
         send_packet(self.tcp_sock, announce)
-        time.sleep(0.05)
 
-        # Launch UDP sending worker thread
-        threading.Thread(target=sender.send_loop, name=f"Sender-{stream_id}", daemon=True).start()
+        # Launch UDP sending worker thread upon receiving FILE_ANNOUNCE_ACK
+        def _send_worker():
+            ready_event.wait(timeout=1.0)
+            sender.send_loop()
+
+        threading.Thread(target=_send_worker, name=f"Sender-{stream_id}", daemon=True).start()
         return True, f"Started sending file '{filename}' to {target_user}"
 
     def _tcp_listen_loop(self):
-        """Worker thread listening for control packets and incoming messages from the server."""
+        """Listen for control packets and incoming messages from server."""
         while self.running:
             try:
                 pkt = recv_packet(self.tcp_sock)
-            except (ConnectionResetError, BrokenPipeError, EOFError, OSError):
-                logger.debug("Connection lost to server.")
-                self.is_connected = False
-                self.running = False
-                break
-            except ValueError as e:
-                logger.warning(f"TCP framing corruption: {e}. Closing connection.")
-                self.is_connected = False
-                self.running = False
-                break
             except Exception:
-                continue
+                self.is_connected = False
+                self.running = False
+                break
 
             msg_type = pkt.msg_type
 
@@ -273,13 +292,9 @@ class CollaborationClient:
                     tgt = data.get("target", "unknown")
                     with self.lock:
                         self.messages.append({
-                            "id": pkt.seq,
-                            "sender": "SYSTEM",
-                            "target": self.username,
+                            "id": pkt.seq, "sender": "SYSTEM", "target": self.username,
                             "text": f"Cannot deliver message: user '{tgt}' is offline.",
-                            "timestamp": time.time(),
-                            "is_broadcast": False,
-                            "is_mine": False
+                            "timestamp": time.time(), "is_broadcast": False, "is_mine": False
                         })
 
             elif msg_type == MsgType.FILE_ANNOUNCE:
@@ -301,9 +316,27 @@ class CollaborationClient:
                         if stream_id in self.transfers:
                             self.transfers[stream_id]["progress"] = min(99.0, round(pct, 1))
 
+                sender_name = data.get("sender")
                 receiver = StreamReceiver(stream_id, total_chunks, on_progress=on_recv_prog)
                 with self.lock:
                     self.active_receivers[stream_id] = receiver
+
+                # Reply with FILE_ANNOUNCE_ACK so sender begins streaming
+                ack_pkt = Packet.json_payload(MsgType.FILE_ANNOUNCE_ACK, {
+                    "target": sender_name, "stream_id": stream_id, "status": "READY"
+                })
+                try:
+                    send_packet(self.tcp_sock, ack_pkt)
+                except Exception:
+                    pass
+
+            elif msg_type == MsgType.FILE_ANNOUNCE_ACK:
+                data = pkt.to_json()
+                stream_id = data.get("stream_id")
+                with self.lock:
+                    ready_event = self.stream_ready_events.get(stream_id)
+                    if ready_event:
+                        ready_event.set()
 
     def _udp_listen_loop(self):
         """Worker thread processing incoming UDP data chunks and ACKs."""
@@ -318,11 +351,10 @@ class CollaborationClient:
                     if receiver:
                         is_enc = bool(pkt.flags & 1)
                         receiver.put_chunk(pkt.chunk_idx, pkt.payload, is_enc)
-                        # Immediately send ACK back to sender
                         ack = UDPPacket(TYPE_ACK, pkt.stream_id, pkt.chunk_idx, pkt.total_chunks)
                         self.udp_sock.sendto(ack.encode(), addr)
 
-                        if receiver.is_complete() and not getattr(receiver, 'finalized', False):
+                        if receiver.is_complete() and not receiver.finalized:
                             receiver.finalized = True
                             self._finalize_received_file(pkt.stream_id, receiver)
 
@@ -331,14 +363,26 @@ class CollaborationClient:
                     if sender:
                         sender.handle_ack(pkt.chunk_idx)
 
-            except (ConnectionResetError, ConnectionRefusedError):
-                continue
-            except OSError:
+                elif pkt.pkt_type == TYPE_FIN:
+                    receiver = self.active_receivers.get(pkt.stream_id)
+                    if receiver:
+                        receiver.handle_fin(pkt.payload)
+
+                elif pkt.pkt_type == TYPE_HEARTBEAT:
+                    try:
+                        resp_data = json.loads(pkt.payload.decode('utf-8'))
+                        if resp_data.get("status") == "OK" and "users" in resp_data:
+                            with self.lock:
+                                self.active_users = resp_data["users"]
+                    except Exception:
+                        pass
+
+            except Exception:
                 if not self.running: break
                 continue
 
     def _finalize_received_file(self, stream_id, receiver):
-        """Reassemble received chunks, verify whole-file SHA-256, and persist to disk."""
+        """Reassemble received chunks and persist to disk."""
         try:
             file_bytes = receiver.reassemble()
             info = self.transfers.get(stream_id, {})
@@ -360,15 +404,25 @@ class CollaborationClient:
                 self.transfers[stream_id]["saved_path"] = save_path
                 self.transfers[stream_id]["progress"] = 100.0
                 self.transfers[stream_id]["status"] = "Completed" if actual_hash == info.get("sha256") else "Corrupted"
-
-            logger.debug(f"File '{filename}' received successfully: {save_path}")
         except Exception as e:
-            logger.error(f"Error finalizing received file: {e}")
+            logger.error(f"Error finalizing file: {e}")
 
     def _heartbeat_loop(self):
-        """Send periodic HEARTBEAT_PING packets every 10 seconds to maintain connection state."""
+        """Send periodic UDP Heartbeat with token and peer discovery every 5 seconds (Step 6/7)."""
         while self.running:
-            time.sleep(10.0)
+            time.sleep(5.0)
+            if self.is_connected and self.udp_sock and self.auth_token:
+                try:
+                    hb_data = json.dumps({
+                        "username": self.username,
+                        "token": self.auth_token,
+                        "action": "discovery"
+                    }).encode('utf-8')
+                    hb_pkt = UDPPacket(TYPE_HEARTBEAT, 0, 0, 0, payload=hb_data)
+                    self.udp_sock.sendto(hb_pkt.encode(), (self.server_host, self.server_udp_port))
+                except Exception:
+                    pass
+
             if self.is_connected and self.tcp_sock:
                 try:
                     send_packet(self.tcp_sock, Packet(MsgType.HEARTBEAT_PING, payload=b"PING"))

@@ -1,9 +1,10 @@
-// Client-side UI Controller for Assignment 1 & CO3094
+// Client-side UI Controller for Assignment 1
 let currentChannel = "ALL";
 let isConnected = false;
 let selectedFile = null;
-let lastSeenMsgCount = 0;
+const seenMessageKeys = new Set();
 const unreadCounts = {};
+let isWindowFocused = true;
 
 // Periodic polling every 1 second
 document.addEventListener("DOMContentLoaded", () => {
@@ -11,50 +12,93 @@ document.addEventListener("DOMContentLoaded", () => {
   setInterval(fetchState, 1000);
 });
 
-window.onfocus = () => {
-  delete unreadCounts[currentChannel];
+window.addEventListener("focus", () => {
+  isWindowFocused = true;
+  unreadCounts[currentChannel] = 0;
   refreshTabTitle();
-  fetchState();
-};
+  updateUnreadBadges();
+});
+
+window.addEventListener("blur", () => {
+  isWindowFocused = false;
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    isWindowFocused = true;
+    unreadCounts[currentChannel] = 0;
+    refreshTabTitle();
+    updateUnreadBadges();
+  } else {
+    isWindowFocused = false;
+  }
+});
 
 function refreshTabTitle() {
-  const total = Object.values(unreadCounts).reduce((a, b) => a + b, 0);
+  const total = Object.values(unreadCounts).reduce((a, b) => a + (Number(b) || 0), 0);
+  const baseTitle = "Assignment 1 - Distributed Streaming Collaboration System";
   if (total > 0) {
-    document.title = `(${total}) Assignment 1 - Distributed Streaming Collaboration System`;
+    document.title = `(${total}) ${baseTitle}`;
   } else {
-    document.title = "Assignment 1 - Distributed Streaming Collaboration System";
+    document.title = baseTitle;
   }
 }
 
 function updateNotifications(messages, myUsername) {
   if (!messages || !Array.isArray(messages)) return;
-  if (messages.length > lastSeenMsgCount && lastSeenMsgCount > 0) {
-    const newMsgs = messages.slice(lastSeenMsgCount);
-    newMsgs.forEach(m => {
-      if (!m.is_mine && myUsername && m.sender !== myUsername) {
+
+  let hasNew = false;
+  messages.forEach(m => {
+    // Unique fingerprint for each message
+    const key = (m.id != null ? m.id : "") + "_" + (m.timestamp || "") + "_" + (m.sender || "") + "_" + (m.text || "");
+    if (!seenMessageKeys.has(key)) {
+      seenMessageKeys.add(key);
+
+      // Only count unread messages from other users
+      if (myUsername && m.sender !== myUsername && !m.is_mine) {
         const ch = m.is_broadcast ? "ALL" : m.sender;
-        if (ch !== currentChannel) {
+        // Count unread if looking at different channel OR window is not focused/tab hidden
+        if (ch !== currentChannel || !isWindowFocused || document.hidden) {
           unreadCounts[ch] = (unreadCounts[ch] || 0) + 1;
+          hasNew = true;
         }
       }
-    });
-    refreshTabTitle();
+    }
+  });
+
+  // Always keep current channel at 0 if window is focused
+  if (isWindowFocused && !document.hidden) {
+    unreadCounts[currentChannel] = 0;
   }
-  lastSeenMsgCount = messages.length;
+
+  refreshTabTitle();
 }
 
-// Toggle Connection Modal
+// Modal controls
 function toggleConnectModal() {
   const modal = document.getElementById("modal-connect");
+  if (!modal) return;
   modal.classList.toggle("hidden");
   if (!modal.classList.contains("hidden")) {
+    document.getElementById("input-username").value = "";
+    document.getElementById("input-password").value = "";
     document.getElementById("input-username").focus();
   }
 }
 
-// Connect to Server using Username, Host IP, and Port
+function closeConnectModal() {
+  const modal = document.getElementById("modal-connect");
+  if (modal) modal.classList.add("hidden");
+  const u = document.getElementById("input-username");
+  const p = document.getElementById("input-password");
+  if (u) u.value = "";
+  if (p) p.value = "";
+}
+
+// Connect / Login to Server
 async function connectToServer() {
-  const username = document.getElementById("input-username").value.trim();
+  const username = (document.getElementById("input-username")?.value || "").trim();
+  const password = document.getElementById("input-password")?.value || "";
   const host = (document.getElementById("input-host")?.value || "127.0.0.1").trim();
   const port = parseInt(document.getElementById("input-port")?.value || "8888", 10);
 
@@ -64,17 +108,45 @@ async function connectToServer() {
     const res = await fetch("/api/connect", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, host, port })
+      body: JSON.stringify({ username, password, host, port, is_register: false })
     });
     const data = await res.json();
     if (data.success) {
-      toggleConnectModal();
+      closeConnectModal();
       fetchState();
     } else {
-      alert("Connect failed: " + data.message);
+      alert("Login failed: " + (data.message || data.error || "Cannot connect to server"));
     }
   } catch (err) {
     alert("Error connecting: " + err);
+  }
+}
+
+// Register new account
+async function registerUser() {
+  const username = (document.getElementById("input-username")?.value || "").trim();
+  const password = document.getElementById("input-password")?.value || "";
+  const host = (document.getElementById("input-host")?.value || "127.0.0.1").trim();
+  const port = parseInt(document.getElementById("input-port")?.value || "8888", 10);
+
+  if (!username) return alert("Please enter username!");
+
+  try {
+    const res = await fetch("/api/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password, host, port, is_register: true })
+    });
+    const data = await res.json();
+    if (data.success) {
+      alert("Registration & Login successful!");
+      closeConnectModal();
+      fetchState();
+    } else {
+      alert("Registration failed: " + (data.message || data.error || "Registration error"));
+    }
+  } catch (err) {
+    alert("Error registering: " + err);
   }
 }
 
@@ -83,7 +155,6 @@ async function disconnectFromServer() {
   try {
     await fetch("/api/disconnect", { method: "POST" });
     for (const k in unreadCounts) delete unreadCounts[k];
-    lastSeenMsgCount = 0;
     refreshTabTitle();
     fetchState();
   } catch (err) {
@@ -125,6 +196,12 @@ function updateHeader(s) {
     btn.textContent = "Disconnect";
     btn.className = "btn btn-secondary";
     btn.onclick = disconnectFromServer;
+
+    // Automatically hide connect modal if open
+    const modal = document.getElementById("modal-connect");
+    if (modal && !modal.classList.contains("hidden")) {
+      modal.classList.add("hidden");
+    }
   } else {
     ind.className = "status-indicator disconnected";
     txt.textContent = "Disconnected";
@@ -135,15 +212,9 @@ function updateHeader(s) {
   }
 }
 
-// Update Sidebar Peers and Recipient Select
-function updatePeers(peers, myUsername) {
-  const container = document.getElementById("peers-container");
-  const select = document.getElementById("file-target-select");
+function updateUnreadBadges() {
+  // Update Global Chat badge
   const unreadGlobal = document.getElementById("unread-global");
-  const others = (peers || []).filter(p => p.username !== myUsername);
-
-  document.getElementById("user-count").textContent = (peers || []).length;
-
   if (unreadGlobal) {
     const gCount = unreadCounts["ALL"] || 0;
     if (gCount > 0) {
@@ -153,6 +224,43 @@ function updatePeers(peers, myUsername) {
       unreadGlobal.classList.add("hidden");
     }
   }
+}
+
+// Update Sidebar Peers and Recipient Select
+function updatePeers(peers, myUsername) {
+  const container = document.getElementById("peers-container");
+  const select = document.getElementById("file-target-select");
+  const unreadGlobal = document.getElementById("unread-global");
+  const inputMsg = document.getElementById("input-message");
+  const btnSendMsg = document.getElementById("btn-send-message");
+  const btnSendFile = document.getElementById("btn-send-file");
+
+  if (!isConnected) {
+    document.getElementById("user-count").textContent = "0";
+    if (unreadGlobal) unreadGlobal.classList.add("hidden");
+    container.innerHTML = '<div class="empty-hint">Disconnected from server</div>';
+    select.innerHTML = '<option value="">Select a peer...</option>';
+    select.disabled = true;
+    if (inputMsg) {
+      inputMsg.placeholder = "Connect to server to chat...";
+      inputMsg.disabled = true;
+    }
+    if (btnSendMsg) btnSendMsg.disabled = true;
+    if (btnSendFile) btnSendFile.disabled = true;
+    return;
+  }
+
+  // When connected:
+  if (inputMsg) {
+    inputMsg.placeholder = "Type a message...";
+    inputMsg.disabled = false;
+  }
+  if (btnSendMsg) btnSendMsg.disabled = false;
+  if (select) select.disabled = false;
+
+  const others = (peers || []).filter(p => p.username !== myUsername);
+  document.getElementById("user-count").textContent = (peers || []).length;
+  updateUnreadBadges();
 
   if (others.length === 0) {
     container.innerHTML = '<div class="empty-hint">No other peers online</div>';
@@ -182,11 +290,12 @@ function updatePeers(peers, myUsername) {
 // Switch between Global Chat and Direct Peer Chat
 function selectChannel(ch) {
   currentChannel = ch;
-  delete unreadCounts[ch];
+  unreadCounts[ch] = 0;
   refreshTabTitle();
   document.getElementById("channel-global").className = "channel-item" + (ch === "ALL" ? " active" : "");
   document.getElementById("chat-header-icon").textContent = ch === "ALL" ? "🌐" : "💬";
   document.getElementById("chat-target-name").textContent = ch === "ALL" ? "Global Chat" : "@" + ch;
+  updateUnreadBadges();
   fetchState();
 }
 
@@ -283,7 +392,7 @@ async function uploadAndSendFile() {
         })
       });
       const data = await res.json();
-      if (!data.success) alert("Transfer failed: " + data.message);
+      if (!data.success) alert("Transfer failed: " + (data.message || data.error));
     } catch (err) {
       alert("Streaming error: " + err);
     } finally {

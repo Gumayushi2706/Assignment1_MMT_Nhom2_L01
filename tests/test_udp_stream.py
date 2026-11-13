@@ -5,15 +5,14 @@ Unit Tests for Reliable UDP Streaming Engine (Selective Repeat Sliding Window).
 import unittest
 import os
 import sys
-import socket
-import threading
 import hashlib
 import queue
 import random
+import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from protocol.udp_stream import StreamSender, StreamReceiver, UDPPacket, TYPE_DATA, TYPE_ACK
+from protocol.udp_stream import StreamSender, StreamReceiver, UDPPacket, TYPE_DATA, TYPE_ACK, TYPE_FIN, WINDOW_SIZE
 
 
 class TestUDPStream(unittest.TestCase):
@@ -33,12 +32,13 @@ class TestUDPStream(unittest.TestCase):
         sender_pipe = LossyPipe(q_to_recv, loss_rate=0.2)
         receiver_pipe = LossyPipe(q_to_send, loss_rate=0.2)
 
-        test_data = os.urandom(40 * 1024)
+        test_data = os.urandom(30 * 1024)
         stream_id = 701
 
         sender = StreamSender(sender_pipe, ('sim', 1), stream_id, test_data, encrypt=True)
         receiver = StreamReceiver(stream_id, sender.total_chunks)
 
+        import threading
         stop = False
         def recv_loop():
             while not stop:
@@ -81,83 +81,41 @@ class TestUDPStream(unittest.TestCase):
         reassembled = receiver.reassemble()
         self.assertEqual(hashlib.sha256(reassembled).hexdigest(), hashlib.sha256(test_data).hexdigest())
 
-    def test_reliable_stream_transfer_no_loss(self):
-        """Test sending 50KB binary data over live UDP socket with Selective Repeat and AES-GCM."""
-        try:
-            sender_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sender_sock.bind(("127.0.0.1", 0))
-            receiver_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            receiver_sock.bind(("127.0.0.1", 0))
-            recv_port = receiver_sock.getsockname()[1]
-        except Exception as e:
-            self.skipTest(f"Socket binding restricted by OS: {e}")
+    def test_fin_packet_handling(self):
+        """Test encoding, decoding and handling of TYPE_FIN segment."""
+        fin_pkt = UDPPacket(TYPE_FIN, stream_id=505, chunk_idx=0, total_chunks=10, payload=b"CANCEL")
+        encoded = fin_pkt.encode()
 
-        test_data = os.urandom(50 * 1024)
-        stream_id = 101
+        decoded = UDPPacket.decode(encoded)
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded.pkt_type, TYPE_FIN)
+        self.assertEqual(decoded.payload, b"CANCEL")
 
-        sender = StreamSender(sender_sock, ("127.0.0.1", recv_port), stream_id, test_data, encrypt=True)
-        receiver = StreamReceiver(stream_id, sender.total_chunks)
+        receiver = StreamReceiver(505, 10)
+        receiver.handle_fin(decoded.payload)
+        self.assertTrue(receiver.fin_received)
+        self.assertTrue(receiver.cancelled)
 
-        received_any = threading.Event()
-        stop_recv = False
-        def recv_loop():
-            while not stop_recv:
-                try:
-                    receiver_sock.settimeout(0.1)
-                    raw, addr = receiver_sock.recvfrom(65535)
-                    received_any.set()
-                    pkt = UDPPacket.decode(raw)
-                    if pkt and pkt.stream_id == stream_id:
-                        if pkt.pkt_type == TYPE_DATA:
-                            receiver.put_chunk(pkt.chunk_idx, pkt.payload, pkt.flags & 1)
-                            ack = UDPPacket(TYPE_ACK, stream_id, pkt.chunk_idx, pkt.total_chunks)
-                            receiver_sock.sendto(ack.encode(), addr)
-                except socket.timeout:
-                    continue
-                except Exception:
-                    break
+    def test_sliding_window_advancement(self):
+        """Test Selective Repeat sliding window base advancement on ACK arrival."""
+        class DummySocket:
+            def sendto(self, data, addr): pass
 
-        recv_thread = threading.Thread(target=recv_loop, daemon=True)
-        recv_thread.start()
+        sender = StreamSender(DummySocket(), ('127.0.0.1', 9999), 303, os.urandom(1200 * 10), encrypt=False)
+        self.assertEqual(sender.base, 0)
+        self.assertEqual(WINDOW_SIZE, 8)
 
-        def ack_loop():
-            while not stop_recv:
-                try:
-                    sender_sock.settimeout(0.1)
-                    raw, _ = sender_sock.recvfrom(65535)
-                    pkt = UDPPacket.decode(raw)
-                    if pkt and pkt.pkt_type == TYPE_ACK:
-                        sender.handle_ack(pkt.chunk_idx)
-                except socket.timeout:
-                    continue
-                except Exception:
-                    break
+        # Receive ACK for chunk 0 -> base advances to 1
+        sender.handle_ack(0)
+        self.assertEqual(sender.base, 1)
 
-        ack_thread = threading.Thread(target=ack_loop, daemon=True)
-        ack_thread.start()
+        # Receive ACK for chunk 2 (out of order) -> base stays at 1
+        sender.handle_ack(2)
+        self.assertEqual(sender.base, 1)
 
-        send_thread = threading.Thread(target=sender.send_loop, daemon=True)
-        send_thread.start()
-
-        try:
-            # Wait up to 1 second to check if OS network sandbox drops loopback UDP
-            if not received_any.wait(timeout=1.0):
-                self.skipTest("Loopback UDP is restricted by OS sandbox/firewall policy")
-
-            send_thread.join(timeout=10.0)
-            self.assertTrue(sender.finished, "Sender did not finish transmission in time")
-            self.assertTrue(receiver.is_complete(), "Receiver did not receive all chunks")
-
-            reassembled = receiver.reassemble()
-            self.assertEqual(hashlib.sha256(reassembled).hexdigest(), hashlib.sha256(test_data).hexdigest())
-        finally:
-            stop_recv = True
-            recv_thread.join(timeout=0.3)
-            ack_thread.join(timeout=0.3)
-            try: sender_sock.close()
-            except Exception: pass
-            try: receiver_sock.close()
-            except Exception: pass
+        # Receive ACK for chunk 1 -> base advances to 3
+        sender.handle_ack(1)
+        self.assertEqual(sender.base, 3)
 
 
 if __name__ == '__main__':

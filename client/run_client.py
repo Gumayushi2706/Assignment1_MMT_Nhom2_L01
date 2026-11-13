@@ -24,6 +24,7 @@ def main():
     parser = argparse.ArgumentParser(description="CO3093 Collaboration Client")
     parser.add_argument("name", nargs="?", default="", help="Username to login with (e.g. Alice, Bob)")
     parser.add_argument("--username", default="", help="Username to login with")
+    parser.add_argument("--password", default="", help="Password for scrypt authentication")
     parser.add_argument("--host", default="127.0.0.1", help="Server Host IP (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8888, help="Server TCP Port (default: 8888)")
     parser.add_argument("--ui-port", type=int, default=5001, help="Local Web UI HTTP Port (default: 5001)")
@@ -39,11 +40,13 @@ def main():
     url = f"http://127.0.0.1:{web_server.port}"
 
     if username:
-        ok, msg = client.connect_and_login(username, host=args.host, port=args.port)
-        status = f"Logged in as '{username}'" if ok else f"Login failed: {msg}"
-        print(f"[+] {status} | Web UI: {url}", flush=True)
+        ok, msg = client.connect_and_login(username, password=args.password, host=args.host, port=args.port)
+        if ok:
+            print(f"[Client] {username} -> {url}", flush=True)
+        else:
+            print(f"[Client] {username} failed: {msg}", flush=True)
     else:
-        print(f"[+] Client running | Web UI: {url}", flush=True)
+        print(f"[Client] Ready -> {url}", flush=True)
 
     if not args.no_browser:
         try:
@@ -55,7 +58,7 @@ def main():
         while True:
             time.sleep(1.0)
     except KeyboardInterrupt:
-        print("\n[-] Client stopped.")
+        print("\n[Client] Stopped.")
     finally:
         client.disconnect()
         web_server.stop()

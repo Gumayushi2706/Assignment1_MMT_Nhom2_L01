@@ -1,0 +1,5 @@
+# CO3093 - Network Application Development (HCMUT HK261)
+# Dependencies for Assignment 1: Distributed Streaming-based Collaboration System
+
+# Cryptographic library for AES-256-GCM AEAD encryption and X25519 ECDH key exchange
+cryptography>=41.0.0
